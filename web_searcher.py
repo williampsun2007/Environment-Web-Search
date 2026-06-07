@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 import os
 import re
 import requests
+import datetime
 
 load_dotenv()
 
@@ -142,9 +143,12 @@ def searching_llm(location, start_date, end_date, existing_sources):
 
             search_count += 1
 
-            # Safety cap: nudge the model to wrap up instead of looping forever
-            if search_count >= 10:
+            if search_count == 10:
+                # Nudge the model to wrap up — fires exactly once
                 messages.append({"role": "user", "content": "You have reached the maximum number of searches. Please return the JSON now."})
+            elif search_count > 13:
+                # Hard exit if the model ignores the nudge
+                return {}
         else:
             print(f"Raw response searching llm: '{response.choices[0].message.content}'")
             try:
@@ -230,11 +234,13 @@ def sort_sources(location, start_date, end_date, sources):
     except json.JSONDecodeError:
         print("Invalid JSON in sort sources, skipping")
         return {}
-    
+
+# Define streamlit elements for title, Location text input, and date selection for start
+# and end dates
 st.title("Pollution Event Web Searcher")
 st.session_state.location = st.text_input("Location")
-st.session_state.start_date = st.date_input("Start Date")
-st.session_state.end_date = st.date_input("End Date")
+st.session_state.start_date = st.date_input("Start Date", min_value = datetime.date(2000, 1, 1))
+st.session_state.end_date = st.date_input("End Date", min_value = datetime.date(2000, 1, 1))
 
 if st.session_state.location and st.session_state.start_date and \
 st.session_state.end_date:
