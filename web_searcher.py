@@ -132,8 +132,10 @@ def searching_llm(location, start_date, end_date, existing_sources):
             for tool_call in text.tool_calls:
                 query = json.loads(tool_call.function.arguments)["query"]
                 print(f"Searching for: {query}")
+                st.write(f"Searching: *{query}*")
                 results = search_web(query)
                 print(f"Got {len(results)} results")
+                st.write(f"&nbsp;&nbsp;&nbsp;&nbsp;→ {len(results)} results")
 
                 messages.append({
                     "role": "tool",
@@ -234,9 +236,7 @@ def sort_sources(location, start_date, end_date, sources):
     except json.JSONDecodeError:
         print("Invalid JSON in sort sources, skipping")
         return {}
-
-# Define streamlit elements for title, Location text input, and date selection for start
-# and end dates
+    
 st.title("Pollution Event Web Searcher")
 st.session_state.location = st.text_input("Location")
 st.session_state.start_date = st.date_input("Start Date", min_value = datetime.date(2000, 1, 1))
@@ -245,34 +245,36 @@ st.session_state.end_date = st.date_input("End Date", min_value = datetime.date(
 if st.session_state.location and st.session_state.start_date and \
 st.session_state.end_date:
     if st.button("Search"):
-        placeholder = st.empty()
-        placeholder.write("Searching...")
-        
         st.session_state.sources = {}
-    
-        sources = searching_llm(st.session_state.location, st.session_state.start_date,
-                            st.session_state.end_date, st.session_state.sources)
-        result = sort_sources(st.session_state.location, st.session_state.start_date,
-                        st.session_state.end_date, sources)
-        # sort_sources includes a "Continue" key; strip it before storing/displaying
-        st.session_state.sources = {k: v for k, v in result.items() if k != "Continue"}
-        print(f"Trial 1: {st.session_state.sources}")
 
-        # Alternate search → sort up to 5 rounds; sort_sources decides when enough sources exist
-        count = 2
-        while result.get("Continue", False) and count <= 5:
+        with st.status("Searching...", expanded=True) as status:
+            st.write(f"**Round 1** — Searching for events near {st.session_state.location}")
             sources = searching_llm(st.session_state.location, st.session_state.start_date,
                                 st.session_state.end_date, st.session_state.sources)
+            st.write(f"Ranking {len(sources)} sources...")
             result = sort_sources(st.session_state.location, st.session_state.start_date,
-                                st.session_state.end_date, sources)
+                            st.session_state.end_date, sources)
+            # sort_sources includes a "Continue" key; strip it before storing/displaying
             st.session_state.sources = {k: v for k, v in result.items() if k != "Continue"}
-            print(f"Trial {count}: {st.session_state.sources}")
-            count += 1
-            
-        placeholder.write("Done!")
+            print(f"Trial 1: {st.session_state.sources}")
+
+            # Alternate search → sort up to 5 rounds; sort_sources decides when enough sources exist
+            count = 2
+            while result.get("Continue", False) and count <= 5:
+                st.write(f"**Round {count}** — Refining with {len(st.session_state.sources)} sources so far")
+                sources = searching_llm(st.session_state.location, st.session_state.start_date,
+                                    st.session_state.end_date, st.session_state.sources)
+                st.write(f"Ranking {len(sources)} sources...")
+                result = sort_sources(st.session_state.location, st.session_state.start_date,
+                                    st.session_state.end_date, sources)
+                st.session_state.sources = {k: v for k, v in result.items() if k != "Continue"}
+                print(f"Trial {count}: {st.session_state.sources}")
+                count += 1
+
+            status.update(label=f"Done — found {len(st.session_state.sources)} sources", state="complete", expanded=False)
         
-        for key, source in st.session_state.sources.items():
-            st.subheader(f"{key}: {source['title']}")
+        for index, (_, source) in enumerate(st.session_state.sources.items()):
+            st.subheader(f"Source {index + 1}: {source['title']}")
             st.write(f"**Type:** {source['type']}")
             st.write(f"**Summary:** {source['summary']}")
             st.write(f"**URL:** {source['url']}")
