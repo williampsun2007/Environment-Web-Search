@@ -92,7 +92,8 @@ def searching_llm(location, start_date, end_date, existing_sources):
                 You MUST use the search tool at least once before returning any sources.
                 Do not rely on your own knowledge. Always search the web first.
 
-                When done, return a JSON dictionary of ALL sources (existing + newly found), each with:
+                When done, return a JSON dictionary of ONLY the newly found sources
+                (do NOT repeat any sources already in the list above), each with:
                 - title
                 - url
                 - type (e.g. Government Report, News Outlet, Social Media, etc.)
@@ -101,10 +102,10 @@ def searching_llm(location, start_date, end_date, existing_sources):
                 Do not write any explanatory text before or after the JSON.
                 Do not acknowledge the task or describe what you are doing.
                 Immediately begin searching using the search tool, and when done return ONLY the JSON.
-                
-                After you have finished all your searches, you MUST return a JSON dictionary of all sources found,
-                with keys "Source_1", "Source_2", etc. Do not stop without returning this JSON.
-                The JSON must be the last thing you output, with no text before or after it.
+
+                After you have finished all your searches, you MUST return a JSON dictionary of only the
+                new sources found, with keys "Source_1", "Source_2", etc. Do not stop without returning
+                this JSON. The JSON must be the last thing you output, with no text before or after it.
             '''
         }
     ]
@@ -187,7 +188,7 @@ def sort_sources(location, start_date, end_date, sources):
         
         Do not write any explanatory text before or after the JSON.
         Do not acknowledge the task or describe what you are doing.
-        Immediately begin searching using the search tool, and when done return ONLY the JSON.
+        Return ONLY the JSON.
         
         Example JSON (always follow this exact format):
         {{
@@ -249,11 +250,14 @@ st.session_state.end_date:
 
         with st.status("Searching...", expanded=True) as status:
             st.write(f"**Round 1** — Searching for events near {st.session_state.location}")
-            sources = searching_llm(st.session_state.location, st.session_state.start_date,
+            new_sources = searching_llm(st.session_state.location, st.session_state.start_date,
                                 st.session_state.end_date, st.session_state.sources)
-            st.write(f"Ranking {len(sources)} sources...")
+            offset = len(st.session_state.sources)
+            merged = {**st.session_state.sources,
+                      **{f"Source_{offset + i + 1}": v for i, v in enumerate(new_sources.values())}}
+            st.write(f"Ranking {len(merged)} sources...")
             result = sort_sources(st.session_state.location, st.session_state.start_date,
-                            st.session_state.end_date, sources)
+                            st.session_state.end_date, merged)
             # sort_sources includes a "Continue" key; strip it before storing/displaying
             st.session_state.sources = {k: v for k, v in result.items() if k != "Continue"}
             print(f"Trial 1: {st.session_state.sources}")
@@ -262,11 +266,14 @@ st.session_state.end_date:
             count = 2
             while result.get("Continue", False) and count <= 5:
                 st.write(f"**Round {count}** — Refining with {len(st.session_state.sources)} sources so far")
-                sources = searching_llm(st.session_state.location, st.session_state.start_date,
+                new_sources = searching_llm(st.session_state.location, st.session_state.start_date,
                                     st.session_state.end_date, st.session_state.sources)
-                st.write(f"Ranking {len(sources)} sources...")
+                offset = len(st.session_state.sources)
+                merged = {**st.session_state.sources,
+                          **{f"Source_{offset + i + 1}": v for i, v in enumerate(new_sources.values())}}
+                st.write(f"Ranking {len(merged)} sources...")
                 result = sort_sources(st.session_state.location, st.session_state.start_date,
-                                    st.session_state.end_date, sources)
+                                    st.session_state.end_date, merged)
                 st.session_state.sources = {k: v for k, v in result.items() if k != "Continue"}
                 print(f"Trial {count}: {st.session_state.sources}")
                 count += 1
