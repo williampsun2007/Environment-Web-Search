@@ -121,7 +121,6 @@ def searching_llm(location, start_date, end_date, existing_sources):
             model = "deepseek-reasoner",
             messages = messages,
             tools = tools,
-            response_format={"type": "json_object"}
         )
 
         text = response.choices[0].message
@@ -221,7 +220,7 @@ def sort_sources(location, start_date, end_date, sources):
     '''
     
     response = client.chat.completions.create(
-        model = "deepseek-reasoner",
+        model = "deepseek-chat",
         messages = [{
             "role": "user",
             "content": prompt
@@ -238,6 +237,18 @@ def sort_sources(location, start_date, end_date, sources):
         print("Invalid JSON in sort sources, skipping")
         return {}
     
+def dedupe_sources(sources):
+    seen_urls = set()
+    deduped = {}
+    i = 1
+    for v in sources.values():
+        url = v.get("url", "")
+        if url and url not in seen_urls:
+            seen_urls.add(url)
+            deduped[f"Source_{i}"] = v
+            i += 1
+    return deduped
+
 st.title("Pollution Event Web Searcher")
 st.session_state.location = st.text_input("Location")
 st.session_state.start_date = st.date_input("Start Date", min_value = datetime.date(2000, 1, 1))
@@ -253,8 +264,8 @@ st.session_state.end_date:
             new_sources = searching_llm(st.session_state.location, st.session_state.start_date,
                                 st.session_state.end_date, st.session_state.sources)
             offset = len(st.session_state.sources)
-            merged = {**st.session_state.sources,
-                      **{f"Source_{offset + i + 1}": v for i, v in enumerate(new_sources.values())}}
+            merged = dedupe_sources({**st.session_state.sources,
+                      **{f"Source_{offset + i + 1}": v for i, v in enumerate(new_sources.values())}})
             st.write(f"Ranking {len(merged)} sources...")
             result = sort_sources(st.session_state.location, st.session_state.start_date,
                             st.session_state.end_date, merged)
@@ -269,8 +280,8 @@ st.session_state.end_date:
                 new_sources = searching_llm(st.session_state.location, st.session_state.start_date,
                                     st.session_state.end_date, st.session_state.sources)
                 offset = len(st.session_state.sources)
-                merged = {**st.session_state.sources,
-                          **{f"Source_{offset + i + 1}": v for i, v in enumerate(new_sources.values())}}
+                merged = dedupe_sources({**st.session_state.sources,
+                          **{f"Source_{offset + i + 1}": v for i, v in enumerate(new_sources.values())}})
                 st.write(f"Ranking {len(merged)} sources...")
                 result = sort_sources(st.session_state.location, st.session_state.start_date,
                                     st.session_state.end_date, merged)
