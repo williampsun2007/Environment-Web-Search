@@ -75,10 +75,10 @@ def searching_llm(location, start_date, end_date, existing_sources):
             "role": "user",
             "content": f'''
                 A pollutant spike was detected near {location} between {start_date} and {end_date}.
-        
+
                 Here are the sources already found so far:
                 {json.dumps(existing_sources)}
-        
+
                 Your job is to search the web for ANY ADDITIONAL events that could explain this spike, such as:
                 - Wildfires or prescribed burns
                 - Industrial accidents or chemical spills
@@ -86,11 +86,49 @@ def searching_llm(location, start_date, end_date, existing_sources):
                 - Any other unusual event that could release pollutants
 
                 Do not search for or return sources already in the list above.
-                Use the search tool to find relevant sources. Search multiple times with different
-                queries if needed.
-                
-                You MUST use the search tool at least once before returning any sources.
-                Do not rely on your own knowledge. Always search the web first.
+
+                YOU MUST FOLLOW THIS EXACT SEARCH STRATEGY IN ORDER:
+
+                PHASE 1 — GOVERNMENT SOURCES (search these first, before anything else):
+                Run site-targeted searches against official government domains. Use the location and
+                YEAR ONLY (not the full date) in each query — e.g. "Tulsa Oklahoma 2021", not
+                "Tulsa, Oklahoma 2021-03-10". At minimum, attempt ALL of the following:
+                  - site:airnow.gov {location} {start_date.year}  (EPA AirNow — most important for air quality)
+                  - site:aqs.epa.gov {location} {start_date.year}  (EPA Air Quality System data)
+                  - site:epa.gov {location} {start_date.year}
+                  - site:noaa.gov {location} {start_date.year}
+                  - site:cdc.gov {location} {start_date.year}
+                  - site:deq.[state-abbreviation].gov {location} {start_date.year}
+                    (derive the 2-letter state abbreviation: Oklahoma → ok, Texas → tx, California → ca, etc.)
+                  - site:csb.gov {location} {start_date.year}
+                  - site:ntsb.gov {location} {start_date.year}
+                  - site:nifc.gov {location} {start_date.year}  (wildfire incidents)
+
+                NAMED-AGENCY FALLBACK (apply immediately after each Phase 1 query that returns 0 or very few results):
+                Retry without the site: filter using the agency's full name. Examples:
+                  - "Oklahoma Department of Environmental Quality" Tulsa 2021 air quality advisory
+                  - "EPA Region 6" Tulsa Oklahoma 2021 pollution incident
+                  - "[State] DEQ" OR "[State] Department of Environmental Quality" {location} {start_date.year}
+                This catches government documents hosted on press-release aggregators or archive pages
+                that Google does not serve under the site: filter.
+
+                PHASE 2 — ACADEMIC SOURCES (search these after government sources):
+                  - site:pubmed.ncbi.nlm.nih.gov {location} air quality {start_date.year}
+                  - scholar.google.com {location} pollution {start_date.year}
+                  - site:sciencedirect.com {location} pollutant {start_date.year}
+
+                PHASE 3 — GENERAL FALLBACK (only after phases 1 and 2):
+                Run broader queries for news and other sources only if government and academic
+                searches returned insufficient results.
+
+                PERSISTENCE RULE:
+                If any query returns few or no results, retry with alternative phrasings before
+                moving on. Try angles such as: "air quality advisory", "incident report",
+                "emergency response", "health alert", "emissions event".
+
+                MINIMUM SEARCH REQUIREMENT:
+                You MUST run at least 5 searches before returning any results, even if early
+                searches look comprehensive. Do not return results after fewer than 5 searches.
 
                 When done, return a JSON dictionary of ONLY the newly found sources
                 (do NOT repeat any sources already in the list above), each with:
@@ -111,17 +149,17 @@ def searching_llm(location, start_date, end_date, existing_sources):
     ]
     
     search_count = 0
+    nudge_sent = False
 
     # Agentic loop: keep calling the model until it stops issuing tool calls and
     # returns the final JSON. Each iteration either executes search tool calls and
     # appends the results to the message history, or breaks out when the model
     # produces a plain text (JSON) response.
     while True:
-        response = client.chat.completions.create(
-            model = "deepseek-reasoner",
-            messages = messages,
-            tools = tools,
-        )
+        call_kwargs = {"model": "deepseek-reasoner", "messages": messages}
+        if not nudge_sent:
+            call_kwargs["tools"] = tools
+        response = client.chat.completions.create(**call_kwargs)
 
         text = response.choices[0].message
 
@@ -146,8 +184,9 @@ def searching_llm(location, start_date, end_date, existing_sources):
             search_count += 1
 
             if search_count == 10:
-                # Nudge the model to wrap up — fires exactly once
+                # Nudge the model to wrap up and stop offering tools — fires exactly once
                 messages.append({"role": "user", "content": "You have reached the maximum number of searches. Please return the JSON now."})
+                nudge_sent = True
             elif search_count > 13:
                 # Hard exit if the model ignores the nudge
                 return {}
@@ -157,7 +196,12 @@ def searching_llm(location, start_date, end_date, existing_sources):
                 text = response.choices[0].message.content
                 # Strip markdown code fences the model sometimes wraps around JSON
                 text = re.sub(r"```[a-z]*", "", text).strip()
-                return json.loads(text)
+                # Extract the JSON object even when the model prepends explanatory prose
+                start = text.find("{")
+                end = text.rfind("}") + 1
+                if start != -1 and end > start:
+                    return json.loads(text[start:end])
+                return {}
             except json.JSONDecodeError:
                 print("Invalid JSON in searching_llm, skipping")
                 return {}
@@ -269,8 +313,8 @@ st.session_state.end_date:
             st.write(f"Ranking {len(merged)} sources...")
             result = sort_sources(st.session_state.location, st.session_state.start_date,
                             st.session_state.end_date, merged)
-            # sort_sources includes a "Continue" key; strip it before storing/displaying
-            st.session_state.sources = {k: v for k, v in result.items() if k != "Continue"}
+            sorted_sources = {k: v for k, v in result.items() if k != "Continue"}
+            st.session_state.sources = sorted_sources if sorted_sources else merged
             print(f"Trial 1: {st.session_state.sources}")
 
             # Alternate search → sort up to 5 rounds; sort_sources decides when enough sources exist
@@ -285,7 +329,8 @@ st.session_state.end_date:
                 st.write(f"Ranking {len(merged)} sources...")
                 result = sort_sources(st.session_state.location, st.session_state.start_date,
                                     st.session_state.end_date, merged)
-                st.session_state.sources = {k: v for k, v in result.items() if k != "Continue"}
+                sorted_sources = {k: v for k, v in result.items() if k != "Continue"}
+                st.session_state.sources = sorted_sources if sorted_sources else merged
                 print(f"Trial {count}: {st.session_state.sources}")
                 count += 1
 
