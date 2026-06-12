@@ -70,6 +70,13 @@ def search_web(query):
     return simplified
     
 def searching_llm(location, start_date, end_date, existing_sources):
+    if start_date.year == end_date.year:
+        search_year = str(start_date.year)
+    elif end_date.year - start_date.year == 1:
+        search_year = f"{start_date.year} OR {end_date.year}"
+    else:
+        search_year = f"{start_date.year}–{end_date.year}"
+
     messages = [
         {
             "role": "user",
@@ -91,31 +98,31 @@ def searching_llm(location, start_date, end_date, existing_sources):
 
                 PHASE 1 — GOVERNMENT SOURCES (search these first, before anything else):
                 Run site-targeted searches against official government domains. Use the location and
-                YEAR ONLY (not the full date) in each query — e.g. "Tulsa Oklahoma 2021", not
+                YEAR(S) ONLY (not the full date) in each query — e.g. "Tulsa Oklahoma 2021", not
                 "Tulsa, Oklahoma 2021-03-10". At minimum, attempt ALL of the following:
-                  - site:airnow.gov {location} {start_date.year}  (EPA AirNow — most important for air quality)
-                  - site:aqs.epa.gov {location} {start_date.year}  (EPA Air Quality System data)
-                  - site:epa.gov {location} {start_date.year}
-                  - site:noaa.gov {location} {start_date.year}
-                  - site:cdc.gov {location} {start_date.year}
-                  - site:deq.[state-abbreviation].gov {location} {start_date.year}
+                  - site:airnow.gov {location} {search_year}  (EPA AirNow — most important for air quality)
+                  - site:aqs.epa.gov {location} {search_year}  (EPA Air Quality System data)
+                  - site:epa.gov {location} {search_year}
+                  - site:noaa.gov {location} {search_year}
+                  - site:cdc.gov {location} {search_year}
+                  - site:deq.[state-abbreviation].gov {location} {search_year}
                     (derive the 2-letter state abbreviation: Oklahoma → ok, Texas → tx, California → ca, etc.)
-                  - site:csb.gov {location} {start_date.year}
-                  - site:ntsb.gov {location} {start_date.year}
-                  - site:nifc.gov {location} {start_date.year}  (wildfire incidents)
+                  - site:csb.gov {location} {search_year}
+                  - site:ntsb.gov {location} {search_year}
+                  - site:nifc.gov {location} {search_year}  (wildfire incidents)
 
                 NAMED-AGENCY FALLBACK (apply immediately after each Phase 1 query that returns 0 or very few results):
                 Retry without the site: filter using the agency's full name. Examples:
                   - "Oklahoma Department of Environmental Quality" Tulsa 2021 air quality advisory
                   - "EPA Region 6" Tulsa Oklahoma 2021 pollution incident
-                  - "[State] DEQ" OR "[State] Department of Environmental Quality" {location} {start_date.year}
+                  - "[State] DEQ" OR "[State] Department of Environmental Quality" {location} {search_year}
                 This catches government documents hosted on press-release aggregators or archive pages
                 that Google does not serve under the site: filter.
 
                 PHASE 2 — ACADEMIC SOURCES (search these after government sources):
-                  - site:pubmed.ncbi.nlm.nih.gov {location} air quality {start_date.year}
-                  - scholar.google.com {location} pollution {start_date.year}
-                  - site:sciencedirect.com {location} pollutant {start_date.year}
+                  - site:pubmed.ncbi.nlm.nih.gov {location} air quality {search_year}
+                  - scholar.google.com {location} pollution {search_year}
+                  - site:sciencedirect.com {location} pollutant {search_year}
 
                 PHASE 3 — GENERAL FALLBACK (only after phases 1 and 2):
                 Run broader queries for news and other sources only if government and academic
@@ -215,48 +222,115 @@ def sort_sources(location, start_date, end_date, sources):
         {json.dumps(sources)}
         
         Your job is to only return a JSON object of these sources, with keys Source_1, Source_2, Source_3,
-        etc., but ranked from most to least credible. 
-        
-        For example, the hierarchy of credibility could be:
-        Government reports > Academic/peer-reviewed > Established news > Local news > Blogs/Non-profits > Wikipedia > Social media
-        
+        etc., organized as follows:
+
+        STEP 0 — Filter for relevance. Exclude any source that meets EITHER of these conditions:
+
+          CONDITION A — Geographic irrelevance (both sub-conditions must be true to exclude):
+            (a1) The event it describes occurred in a clearly different geographic area (different state
+                 or region) from {location}
+            (a2) The source does not document any direct effect (smoke, emissions, contamination)
+                 reaching {location} or its surrounding area
+
+          CONDITION B — Not a specific event: The source is routine monitoring data, an annual
+            program report, a permit application or reclassification, or any other background /
+            administrative content that does NOT document a specific incident, accident, fire,
+            spill, or other discrete occurrence that could explain a pollutant spike.
+            Exclude examples:
+              - Air quality monitoring dashboards showing routine historical data (no incident)
+              - Annual air quality program updates or ozone advance reports
+              - Operating permit applications, renewals, or reclassifications
+              - General background information about a facility or region
+            Keep examples:
+              - Incident reports for a specific fire, spill, explosion, or accident
+              - News coverage of a discrete pollution event
+              - Air quality health advisories tied to a specific event
+              - Monitoring readings specifically documenting an elevation during an incident
+
+          Excluded sources must be completely omitted from the output JSON — do not include
+          them with a low rank.
+
+          Additional Condition B exclude examples:
+            - Planning announcements or preparatory notices for events that have not yet
+              occurred (e.g., "Planning underway for prescribed burns", "Burn scheduled
+              for next week")
+            - Outlook or forecast documents describing anticipated future fire danger or
+              air quality conditions, unless they document that the forecasted conditions
+              actually occurred (e.g., a seasonal wildfire outlook that only projects risk,
+              not a confirmed incident)
+
+        STEP 1 — Assign each source an event_type (e.g. Wildfire, Industrial Accident, Power Plant Emissions,
+        General Air Quality, etc.) based on what the source describes.
+
+        STEP 2 — Assign each source a date field (e.g. "March 2021") if the month can be inferred from the
+        source title or summary. Omit the date field entirely if unknown.
+
+        STEP 3 — Order the sources by these three criteria in priority order:
+          1. Group by event_type — all sources with the same event_type MUST be consecutive.
+             NEVER interleave sources from two different event_types.
+          2. Within each group, rank strictly from most to least credible using this exact tier list:
+               Tier 1 (highest): Government reports / Government databases
+               Tier 2: Academic / peer-reviewed
+               Tier 3: Established national news outlets
+               Tier 4: Local news outlets
+               Tier 5: Blogs / Non-profits / Industry publications
+               Tier 6: Wikipedia / encyclopedias  (Wikipedia is LOW credibility, below all news)
+               Tier 7 (lowest): Social media
+             A lower-tier source must NEVER appear before a higher-tier source within the same group.
+          3. Within each credibility tier, sort by date oldest-to-newest if sources span different months
+
         At the end of the JSON, there should be another key, 'Continue', which is either true or false. If true, then
         another LLM will search further, update the sources list, and you will be called again to sort them. If false,
         then we will stop searching. For example, you may continue searching if we only have very little sources, and you
         may stop searching if you believe there are enough sources already, or continuing to look for any will be less meaningful.
         Stop searching if there are already 8+ sources, or if the top sources are already high credibility government/academic ones.
-        
+
         Do not search for new sources.
         Your job is to only sort the current existing ones.
-        
+
         Do not write any explanatory text before or after the JSON.
         Do not acknowledge the task or describe what you are doing.
         Return ONLY the JSON.
-        
+
         Example JSON (always follow this exact format):
         {{
             "Source_1": {{
                 "title": "California Air Resources Board - Incident Report: Dixie Fire Emissions",
                 "url": "https://ww2.arb.ca.gov/...",
                 "type": "Government Report",
+                "event_type": "Wildfire",
+                "date": "July 2021",
                 "summary": "Official emissions data recorded during the Dixie Fire, July-August 2021."
             }},
             "Source_2": {{
                 "title": "EPA AirNow Fire and Smoke Map - Event Log",
                 "url": "https://www.airnow.gov/...",
                 "type": "Government Database",
+                "event_type": "Wildfire",
+                "date": "August 2021",
                 "summary": "Air quality index readings spiking in the region during the relevant period."
             }},
             "Source_3": {{
                 "title": "Reuters - Massive wildfire spreads across Northern California",
                 "url": "https://www.reuters.com/...",
                 "type": "News Outlet",
+                "event_type": "Wildfire",
+                "date": "July 2021",
                 "summary": "News coverage reporting the fire's spread and affected counties."
             }},
             "Source_4": {{
+                "title": "CSB Investigation Report - Refinery Explosion",
+                "url": "https://www.csb.gov/...",
+                "type": "Government Report",
+                "event_type": "Industrial Accident",
+                "date": "March 2021",
+                "summary": "Chemical Safety Board report on the refinery explosion and resulting emissions."
+            }},
+            "Source_5": {{
                 "title": "Reddit post - r/California - Anyone else seeing crazy smoke?",
                 "url": "https://www.reddit.com/...",
                 "type": "Social Media",
+                "event_type": "Wildfire",
                 "summary": "User reports of heavy smoke in the area around the same dates."
             }},
             "Continue": true
@@ -336,9 +410,20 @@ st.session_state.end_date:
 
             status.update(label=f"Done — found {len(st.session_state.sources)} sources", state="complete", expanded=False)
         
-        for index, (_, source) in enumerate(st.session_state.sources.items()):
-            st.subheader(f"Source {index + 1}: {source['title']}")
-            st.write(f"**Type:** {source['type']}")
-            st.write(f"**Summary:** {source['summary']}")
-            st.write(f"**URL:** {source['url']}")
-            st.divider()
+        groups = {}
+        for source in st.session_state.sources.values():
+            et = source.get("event_type", "Unknown Event")
+            if et not in groups:
+                groups[et] = []
+            groups[et].append(source)
+
+        for event_type, group_sources in groups.items():
+            st.header(event_type)
+            for i, source in enumerate(group_sources, 1):
+                st.subheader(f"Source {i}: {source['title']}")
+                st.write(f"**Type:** {source['type']}")
+                if source.get("date"):
+                    st.write(f"**Date:** {source['date']}")
+                st.write(f"**Summary:** {source['summary']}")
+                st.write(f"**URL:** {source['url']}")
+                st.divider()
