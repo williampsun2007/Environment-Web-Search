@@ -6,6 +6,7 @@ import os
 import re
 import requests
 import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 load_dotenv()
 
@@ -367,6 +368,61 @@ def dedupe_sources(sources):
             i += 1
     return deduped
 
+def fetch_page_text(url):
+    try:
+        resp = requests.get(url, timeout=20, headers={"User-Agent": "Mozilla/5.0"})
+        resp.raise_for_status()
+        if "text/html" not in resp.headers.get("Content-Type", ""):
+            return ""
+        text = re.sub(r"<[^>]+>", " ", resp.text)
+        text = re.sub(r"\s+", " ", text).strip()
+        return text[:3000]
+    except Exception:
+        return ""
+
+def synthesize_findings(location, start_date, end_date, sources):
+    enriched = {}
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = {executor.submit(fetch_page_text, src.get("url", "")): (key, src)
+                   for key, src in sources.items()}
+        for future in as_completed(futures):
+            key, src = futures[future]
+            enriched[key] = {**src, "page_text": future.result()}
+
+    prompt = f"""
+        A pollutant spike was detected near {location} between {start_date} and {end_date}.
+        The following sources were found. Each includes its metadata and up to 3000 characters
+        of text fetched directly from the source URL (may be empty if the page was inaccessible).
+
+        {json.dumps(enriched, indent=2)}
+
+        Analyze these sources for an environmental analyst and return ONLY a JSON object with
+        these exact keys (no prose before or after the JSON):
+
+        {{
+          "most_likely_cause": "One sentence naming the most likely cause of the spike, citing specific source titles.",
+          "key_evidence": ["Bullet citing source 1", "Bullet citing source 2", "Bullet citing source 3"],
+          "gaps_and_alternatives": ["Gap or alternative explanation 1", "Gap 2"],
+          "confidence": "High or Medium or Low",
+          "confidence_rationale": "One sentence explaining the confidence rating based on source quality."
+        }}
+
+        Be concise and specific. Ground claims in the source text above; do not invent facts.
+    """
+    response = client.chat.completions.create(
+        model="deepseek-chat",
+        messages=[{"role": "user", "content": prompt}],
+        response_format={"type": "json_object"}
+    )
+    
+    try:
+        text = response.choices[0].message.content
+        text = re.sub(r"```[a-z]*", "", text).strip()
+        return json.loads(text)
+    except json.JSONDecodeError:
+        print("Invalid JSON in synthesis_findings()")
+        return text
+
 st.title("Pollution Event Web Searcher")
 st.session_state.location = st.text_input("Location")
 st.session_state.start_date = st.date_input("Start Date", min_value = datetime.date(2000, 1, 1))
@@ -409,7 +465,39 @@ st.session_state.end_date:
                 count += 1
 
             status.update(label=f"Done — found {len(st.session_state.sources)} sources", state="complete", expanded=False)
-        
+
+        with st.spinner("Synthesizing findings..."):
+            synthesis = synthesize_findings(
+                st.session_state.location,
+                st.session_state.start_date,
+                st.session_state.end_date,
+                st.session_state.sources
+            )
+
+        st.subheader("Summary")
+        if isinstance(synthesis, dict):
+            st.info(f"**Most Likely Cause:** {synthesis.get('most_likely_cause', '')}")
+
+            col1, col2 = st.columns(2)
+            with col1:
+                st.markdown("**Key Evidence**")
+                for point in synthesis.get("key_evidence", []):
+                    st.markdown(f"- {point}")
+            with col2:
+                st.markdown("**Gaps & Alternatives**")
+                for point in synthesis.get("gaps_and_alternatives", []):
+                    st.markdown(f"- {point}")
+
+            confidence = synthesis.get("confidence", "")
+            color = {"HIGH": "green", "MEDIUM": "orange", "LOW": "red"}.get(confidence.upper(), "gray")
+            st.markdown(
+                f'<span style="color:{color};font-weight:bold">Confidence: {confidence}</span>'
+                f' — {synthesis.get("confidence_rationale", "")}',
+                unsafe_allow_html=True
+            )
+        else:
+            st.info(synthesis)
+
         groups = {}
         for source in st.session_state.sources.values():
             et = source.get("event_type", "Unknown Event")
