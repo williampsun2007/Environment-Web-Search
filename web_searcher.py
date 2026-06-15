@@ -18,6 +18,8 @@ if "start_date" not in st.session_state:
     st.session_state.start_date = ""
 if "end_date" not in st.session_state:
     st.session_state.end_date = ""
+if "pollutant" not in st.session_state:
+    st.session_state.pollutant = ""
 if "sources" not in st.session_state:
     st.session_state.sources = {}
     
@@ -70,7 +72,7 @@ def search_web(query):
 
     return simplified
     
-def searching_llm(location, start_date, end_date, existing_sources):
+def searching_llm(location, start_date, end_date, pollutant, existing_sources):
     if start_date.year == end_date.year:
         search_year = str(start_date.year)
     elif end_date.year - start_date.year == 1:
@@ -82,16 +84,16 @@ def searching_llm(location, start_date, end_date, existing_sources):
         {
             "role": "user",
             "content": f'''
-                A pollutant spike was detected near {location} between {start_date} and {end_date}.
+                A {pollutant} spike was detected near {location} between {start_date} and {end_date}.
 
                 Here are the sources already found so far:
                 {json.dumps(existing_sources)}
 
-                Your job is to search the web for ANY ADDITIONAL events that could explain this spike, such as:
+                Your job is to search the web for ANY ADDITIONAL events that could explain this {pollutant} spike, such as:
                 - Wildfires or prescribed burns
                 - Industrial accidents or chemical spills
                 - Power plant emissions
-                - Any other unusual event that could release pollutants
+                - Any other unusual event that could release {pollutant} or its precursors
 
                 Do not search for or return sources already in the list above.
 
@@ -103,6 +105,7 @@ def searching_llm(location, start_date, end_date, existing_sources):
                 "Tulsa, Oklahoma 2021-03-10". At minimum, attempt ALL of the following:
                   - site:airnow.gov {location} {search_year}  (EPA AirNow — most important for air quality)
                   - site:aqs.epa.gov {location} {search_year}  (EPA Air Quality System data)
+                  - site:epa.gov {location} {pollutant} {search_year}
                   - site:epa.gov {location} {search_year}
                   - site:noaa.gov {location} {search_year}
                   - site:cdc.gov {location} {search_year}
@@ -117,17 +120,18 @@ def searching_llm(location, start_date, end_date, existing_sources):
                   - "Oklahoma Department of Environmental Quality" Tulsa 2021 air quality advisory
                   - "EPA Region 6" Tulsa Oklahoma 2021 pollution incident
                   - "[State] DEQ" OR "[State] Department of Environmental Quality" {location} {search_year}
+                  - "EPA" {location} {pollutant} incident {search_year}
                 This catches government documents hosted on press-release aggregators or archive pages
                 that Google does not serve under the site: filter.
 
                 PHASE 2 — ACADEMIC SOURCES (search these after government sources):
-                  - site:pubmed.ncbi.nlm.nih.gov {location} air quality {search_year}
-                  - scholar.google.com {location} pollution {search_year}
-                  - site:sciencedirect.com {location} pollutant {search_year}
+                  - site:pubmed.ncbi.nlm.nih.gov {location} {pollutant} {search_year}
+                  - scholar.google.com {location} {pollutant} pollution {search_year}
+                  - site:sciencedirect.com {location} {pollutant} {search_year}
 
                 PHASE 3 — GENERAL FALLBACK (only after phases 1 and 2):
                 Run broader queries for news and other sources only if government and academic
-                searches returned insufficient results.
+                searches returned insufficient results. Include {pollutant} in these queries where relevant.
 
                 PERSISTENCE RULE:
                 If any query returns few or no results, retry with alternative phrasings before
@@ -215,9 +219,9 @@ def searching_llm(location, start_date, end_date, existing_sources):
                 return {}
         
     
-def sort_sources(location, start_date, end_date, sources):
+def sort_sources(location, start_date, end_date, pollutant, sources):
     prompt = f'''
-        A pollutant spike was detected near {location} between {start_date} and {end_date}. Here are
+        A {pollutant} spike was detected near {location} between {start_date} and {end_date}. Here are
         a list of current sources:
         
         {json.dumps(sources)}
@@ -232,6 +236,12 @@ def sort_sources(location, start_date, end_date, sources):
                  or region) from {location}
             (a2) The source does not document any direct effect (smoke, emissions, contamination)
                  reaching {location} or its surrounding area
+
+          POLLUTANT RELEVANCE NOTE: The spike being investigated is specifically for {pollutant}.
+            Sources that explicitly mention {pollutant} or known precursors/co-pollutants of {pollutant}
+            are highly relevant. Sources describing events that could not plausibly release {pollutant}
+            (e.g., a wildfire when the pollutant is a heavy metal) may be excluded under Condition A
+            unless they document direct effects reaching {location}.
 
           CONDITION B — Not a specific event: The source is routine monitoring data, an annual
             program report, a permit application or reclassification, or any other background /
@@ -380,7 +390,7 @@ def fetch_page_text(url):
     except Exception:
         return ""
 
-def synthesize_findings(location, start_date, end_date, sources):
+def synthesize_findings(location, start_date, end_date, pollutant, sources):
     enriched = {}
     with ThreadPoolExecutor(max_workers=8) as executor:
         futures = {executor.submit(fetch_page_text, src.get("url", "")): (key, src)
@@ -390,7 +400,7 @@ def synthesize_findings(location, start_date, end_date, sources):
             enriched[key] = {**src, "page_text": future.result()}
 
     prompt = f"""
-        A pollutant spike was detected near {location} between {start_date} and {end_date}.
+        A {pollutant} spike was detected near {location} between {start_date} and {end_date}.
         The following sources were found. Each includes its metadata and up to 3000 characters
         of text fetched directly from the source URL (may be empty if the page was inaccessible).
 
@@ -400,11 +410,11 @@ def synthesize_findings(location, start_date, end_date, sources):
         these exact keys (no prose before or after the JSON):
 
         {{
-          "most_likely_cause": "One sentence naming the most likely cause of the spike, citing specific source titles.",
-          "key_evidence": ["Bullet citing source 1", "Bullet citing source 2", "Bullet citing source 3"],
+          "most_likely_cause": "One sentence naming the most likely cause of the {pollutant} spike, citing specific source titles. Explicitly state whether the identified event would plausibly release {pollutant} or its precursors.",
+          "key_evidence": ["Bullet citing source 1 — include any direct mention of {pollutant} if found", "Bullet citing source 2", "Bullet citing source 3"],
           "gaps_and_alternatives": ["Gap or alternative explanation 1", "Gap 2"],
           "confidence": "High or Medium or Low",
-          "confidence_rationale": "One sentence explaining the confidence rating based on source quality."
+          "confidence_rationale": "One sentence explaining the confidence rating based on source quality and how well the evidence connects to {pollutant} specifically."
         }}
 
         Be concise and specific. Ground claims in the source text above; do not invent facts.
@@ -427,22 +437,23 @@ st.title("Pollution Event Web Searcher")
 st.session_state.location = st.text_input("Location")
 st.session_state.start_date = st.date_input("Start Date", min_value = datetime.date(2000, 1, 1))
 st.session_state.end_date = st.date_input("End Date", min_value = datetime.date(2000, 1, 1))
+st.session_state.pollutant = st.text_input("Pollutant", placeholder="e.g. PM2.5, ethylene, VOCs")
 
 if st.session_state.location and st.session_state.start_date and \
-st.session_state.end_date:
+st.session_state.end_date and st.session_state.pollutant:
     if st.button("Search"):
         st.session_state.sources = {}
 
         with st.status("Searching...", expanded=True) as status:
-            st.write(f"**Round 1** — Searching for events near {st.session_state.location}")
+            st.write(f"**Round 1** — Searching for {st.session_state.pollutant} events near {st.session_state.location}")
             new_sources = searching_llm(st.session_state.location, st.session_state.start_date,
-                                st.session_state.end_date, st.session_state.sources)
+                                st.session_state.end_date, st.session_state.pollutant, st.session_state.sources)
             offset = len(st.session_state.sources)
             merged = dedupe_sources({**st.session_state.sources,
                       **{f"Source_{offset + i + 1}": v for i, v in enumerate(new_sources.values())}})
             st.write(f"Ranking {len(merged)} sources...")
             result = sort_sources(st.session_state.location, st.session_state.start_date,
-                            st.session_state.end_date, merged)
+                            st.session_state.end_date, st.session_state.pollutant, merged)
             sorted_sources = {k: v for k, v in result.items() if k != "Continue"}
             st.session_state.sources = sorted_sources if sorted_sources else merged
             print(f"Trial 1: {st.session_state.sources}")
@@ -452,13 +463,13 @@ st.session_state.end_date:
             while result.get("Continue", False) and count <= 5:
                 st.write(f"**Round {count}** — Refining with {len(st.session_state.sources)} sources so far")
                 new_sources = searching_llm(st.session_state.location, st.session_state.start_date,
-                                    st.session_state.end_date, st.session_state.sources)
+                                    st.session_state.end_date, st.session_state.pollutant, st.session_state.sources)
                 offset = len(st.session_state.sources)
                 merged = dedupe_sources({**st.session_state.sources,
                           **{f"Source_{offset + i + 1}": v for i, v in enumerate(new_sources.values())}})
                 st.write(f"Ranking {len(merged)} sources...")
                 result = sort_sources(st.session_state.location, st.session_state.start_date,
-                                    st.session_state.end_date, merged)
+                                    st.session_state.end_date, st.session_state.pollutant, merged)
                 sorted_sources = {k: v for k, v in result.items() if k != "Continue"}
                 st.session_state.sources = sorted_sources if sorted_sources else merged
                 print(f"Trial {count}: {st.session_state.sources}")
@@ -471,6 +482,7 @@ st.session_state.end_date:
                 st.session_state.location,
                 st.session_state.start_date,
                 st.session_state.end_date,
+                st.session_state.pollutant,
                 st.session_state.sources
             )
 
