@@ -7,6 +7,7 @@ import re
 import requests
 import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from html.parser import HTMLParser
 
 load_dotenv()
 
@@ -171,7 +172,11 @@ def searching_llm(location, start_date, end_date, pollutant, existing_sources):
         call_kwargs = {"model": "deepseek-reasoner", "messages": messages}
         if not nudge_sent:
             call_kwargs["tools"] = tools
-        response = client.chat.completions.create(**call_kwargs)
+        try:
+            response = client.chat.completions.create(**call_kwargs)
+        except Exception as e:
+            print(f"LLM API error in searching_llm: {e}")
+            return {}
 
         text = response.choices[0].message
 
@@ -348,15 +353,19 @@ def sort_sources(location, start_date, end_date, pollutant, sources):
         }}
     '''
     
-    response = client.chat.completions.create(
-        model = "deepseek-chat",
-        messages = [{
-            "role": "user",
-            "content": prompt
-        }],
-        response_format={"type": "json_object"}
-    )
-    
+    try:
+        response = client.chat.completions.create(
+            model = "deepseek-chat",
+            messages = [{
+                "role": "user",
+                "content": prompt
+            }],
+            response_format={"type": "json_object"}
+        )
+    except Exception as e:
+        print(f"LLM API error in sort_sources: {e}")
+        return {}
+
     try:
         text = response.choices[0].message.content
         text = re.sub(r"```[a-z]*", "", text).strip()
@@ -378,15 +387,64 @@ def dedupe_sources(sources):
             i += 1
     return deduped
 
+def _credibility_tier(source_type: str) -> int:
+    t = source_type.lower()
+    if "government" in t:                                    return 1
+    if "academic" in t or "peer" in t or "journal" in t:     return 2
+    if "local news" in t:                                    return 4
+    if "news" in t:                                          return 3
+    if "wikipedia" in t or "encyclopedia" in t:              return 6
+    if "social" in t:                                        return 7
+    return 5
+
+def post_sort_sources(sources: dict) -> dict:
+    group_order, groups = [], {}
+    for src in sources.values():
+        et = src.get("event_type", "Unknown")
+        if et not in groups:
+            group_order.append(et)
+            groups[et] = []
+        groups[et].append(src)
+
+    result, i = {}, 1
+    for et in group_order:
+        for src in sorted(groups[et], key=lambda s: _credibility_tier(s.get("type", ""))):
+            result[f"Source_{i}"] = src
+            i += 1
+    return result
+
+class _TextExtractor(HTMLParser):
+    _skip = {"script", "style", "head", "nav", "footer"}
+
+    def __init__(self):
+        super().__init__()
+        self._buf, self._depth = [], 0
+
+    def handle_starttag(self, tag, attrs):
+        if tag in self._skip:
+            self._depth += 1
+
+    def handle_endtag(self, tag):
+        if tag in self._skip and self._depth:
+            self._depth -= 1
+
+    def handle_data(self, data):
+        if not self._depth:
+            self._buf.append(data)
+
+    def get_text(self):
+        return re.sub(r"\s+", " ", " ".join(self._buf)).strip()
+
+
 def fetch_page_text(url):
     try:
         resp = requests.get(url, timeout=20, headers={"User-Agent": "Mozilla/5.0"})
         resp.raise_for_status()
         if "text/html" not in resp.headers.get("Content-Type", ""):
             return ""
-        text = re.sub(r"<[^>]+>", " ", resp.text)
-        text = re.sub(r"\s+", " ", text).strip()
-        return text[:3000]
+        extractor = _TextExtractor()
+        extractor.feed(resp.text)
+        return extractor.get_text()[:3000]
     except Exception:
         return ""
 
@@ -419,12 +477,16 @@ def synthesize_findings(location, start_date, end_date, pollutant, sources):
 
         Be concise and specific. Ground claims in the source text above; do not invent facts.
     """
-    response = client.chat.completions.create(
-        model="deepseek-chat",
-        messages=[{"role": "user", "content": prompt}],
-        response_format={"type": "json_object"}
-    )
-    
+    try:
+        response = client.chat.completions.create(
+            model="deepseek-chat",
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"}
+        )
+    except Exception as e:
+        print(f"LLM API error in synthesize_findings: {e}")
+        return {}
+
     try:
         text = response.choices[0].message.content
         text = re.sub(r"```[a-z]*", "", text).strip()
@@ -455,7 +517,7 @@ st.session_state.end_date and st.session_state.pollutant:
             result = sort_sources(st.session_state.location, st.session_state.start_date,
                             st.session_state.end_date, st.session_state.pollutant, merged)
             sorted_sources = {k: v for k, v in result.items() if k != "Continue"}
-            st.session_state.sources = sorted_sources if sorted_sources else merged
+            st.session_state.sources = post_sort_sources(sorted_sources) if sorted_sources else merged
             print(f"Trial 1: {st.session_state.sources}")
 
             # Alternate search → sort up to 5 rounds; sort_sources decides when enough sources exist
@@ -471,7 +533,7 @@ st.session_state.end_date and st.session_state.pollutant:
                 result = sort_sources(st.session_state.location, st.session_state.start_date,
                                     st.session_state.end_date, st.session_state.pollutant, merged)
                 sorted_sources = {k: v for k, v in result.items() if k != "Continue"}
-                st.session_state.sources = sorted_sources if sorted_sources else merged
+                st.session_state.sources = post_sort_sources(sorted_sources) if sorted_sources else merged
                 print(f"Trial {count}: {st.session_state.sources}")
                 count += 1
 
