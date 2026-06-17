@@ -73,13 +73,25 @@ def search_web(query):
 
     return simplified
     
-def searching_llm(location, start_date, end_date, pollutant, existing_sources):
+def searching_llm(location, start_date, end_date, pollutant, existing_sources, searched_queries = None):
+    if searched_queries is None:
+        searched_queries = set()
+
     if start_date.year == end_date.year:
         search_year = str(start_date.year)
     elif end_date.year - start_date.year == 1:
         search_year = f"{start_date.year} OR {end_date.year}"
     else:
         search_year = f"{start_date.year}–{end_date.year}"
+
+    already_searched_block = ""
+    if searched_queries:
+        already_searched_block = f"""
+                ALREADY-SEARCHED QUERIES — DO NOT REPEAT THESE:
+                The following exact queries were run in previous rounds. Skip them entirely and
+                do not rerun them. Use different phrasings, sites, or angles instead:
+                {json.dumps(sorted(searched_queries), indent = 16)}
+                """
 
     messages = [
         {
@@ -97,7 +109,9 @@ def searching_llm(location, start_date, end_date, pollutant, existing_sources):
                 - Any other unusual event that could release {pollutant} or its precursors
 
                 Do not search for or return sources already in the list above.
-
+                
+                {already_searched_block}
+                
                 YOU MUST FOLLOW THIS EXACT SEARCH STRATEGY IN ORDER:
 
                 PHASE 1 — GOVERNMENT SOURCES (search these first, before anything else):
@@ -186,6 +200,7 @@ def searching_llm(location, start_date, end_date, pollutant, existing_sources):
 
             for tool_call in text.tool_calls:
                 query = json.loads(tool_call.function.arguments)["query"]
+                searched_queries.add(query)
                 print(f"Searching for: {query}")
                 st.write(f"Searching: *{query}*")
                 results = search_web(query)
@@ -274,6 +289,23 @@ def sort_sources(location, start_date, end_date, pollutant, sources):
               air quality conditions, unless they document that the forecasted conditions
               actually occurred (e.g., a seasonal wildfire outlook that only projects risk,
               not a confirmed incident)
+
+          CONDITION C — Temporal irrelevance: Exclude a source if BOTH of the following are true:
+            (c1) The source's publication date or the event it describes falls clearly outside
+                 the investigation window ({start_date} to {end_date}) — for example, months
+                 or years before or after the spike period.
+            (c2) The source is NOT a retrospective investigation, incident report, or academic
+                 study that was published after {end_date} but specifically documents the event
+                 or conditions during {start_date}–{end_date}.
+            Excluded examples:
+              - An article from December 2021 about a wildfire when the spike is March 2021
+                (describes a different, later event; cannot be causal)
+              - A news story from 2019 about a facility when the spike is 2021
+            Keep examples:
+              - A CSB investigation report published June 2021 about an accident that
+                occurred in March 2021
+              - An EPA post-incident summary published weeks after {end_date} that
+                specifically covers the spike period
 
         STEP 1 — Assign each source an event_type (e.g. Wildfire, Industrial Accident, Power Plant Emissions,
         General Air Quality, etc.) based on what the source describes.
@@ -450,7 +482,7 @@ def fetch_page_text(url):
 
 def synthesize_findings(location, start_date, end_date, pollutant, sources):
     enriched = {}
-    with ThreadPoolExecutor(max_workers=8) as executor:
+    with ThreadPoolExecutor(max_workers = 8) as executor:
         futures = {executor.submit(fetch_page_text, src.get("url", "")): (key, src)
                    for key, src in sources.items()}
         for future in as_completed(futures):
@@ -462,7 +494,7 @@ def synthesize_findings(location, start_date, end_date, pollutant, sources):
         The following sources were found. Each includes its metadata and up to 3000 characters
         of text fetched directly from the source URL (may be empty if the page was inaccessible).
 
-        {json.dumps(enriched, indent=2)}
+        {json.dumps(enriched, indent = 2)}
 
         Analyze these sources for an environmental analyst and return ONLY a JSON object with
         these exact keys (no prose before or after the JSON):
@@ -479,9 +511,9 @@ def synthesize_findings(location, start_date, end_date, pollutant, sources):
     """
     try:
         response = client.chat.completions.create(
-            model="deepseek-chat",
-            messages=[{"role": "user", "content": prompt}],
-            response_format={"type": "json_object"}
+            model = "deepseek-chat",
+            messages = [{"role": "user", "content": prompt}],
+            response_format = {"type": "json_object"}
         )
     except Exception as e:
         print(f"LLM API error in synthesize_findings: {e}")
@@ -499,17 +531,19 @@ st.title("Pollution Event Web Searcher")
 st.session_state.location = st.text_input("Location")
 st.session_state.start_date = st.date_input("Start Date", min_value = datetime.date(2000, 1, 1))
 st.session_state.end_date = st.date_input("End Date", min_value = datetime.date(2000, 1, 1))
-st.session_state.pollutant = st.text_input("Pollutant", placeholder="e.g. PM2.5, ethylene, VOCs")
+st.session_state.pollutant = st.text_input("Pollutant", placeholder = "e.g. PM2.5, ethylene, VOCs")
 
 if st.session_state.location and st.session_state.start_date and \
 st.session_state.end_date and st.session_state.pollutant:
     if st.button("Search"):
         st.session_state.sources = {}
 
-        with st.status("Searching...", expanded=True) as status:
+        with st.status("Searching...", expanded = True) as status:
+            searched_queries = set()
             st.write(f"**Round 1** — Searching for {st.session_state.pollutant} events near {st.session_state.location}")
             new_sources = searching_llm(st.session_state.location, st.session_state.start_date,
-                                st.session_state.end_date, st.session_state.pollutant, st.session_state.sources)
+                                st.session_state.end_date, st.session_state.pollutant, st.session_state.sources,
+                                searched_queries)
             offset = len(st.session_state.sources)
             merged = dedupe_sources({**st.session_state.sources,
                       **{f"Source_{offset + i + 1}": v for i, v in enumerate(new_sources.values())}})
@@ -525,7 +559,8 @@ st.session_state.end_date and st.session_state.pollutant:
             while result.get("Continue", False) and count <= 5:
                 st.write(f"**Round {count}** — Refining with {len(st.session_state.sources)} sources so far")
                 new_sources = searching_llm(st.session_state.location, st.session_state.start_date,
-                                    st.session_state.end_date, st.session_state.pollutant, st.session_state.sources)
+                                    st.session_state.end_date, st.session_state.pollutant, st.session_state.sources,
+                                    searched_queries)
                 offset = len(st.session_state.sources)
                 merged = dedupe_sources({**st.session_state.sources,
                           **{f"Source_{offset + i + 1}": v for i, v in enumerate(new_sources.values())}})
