@@ -8,6 +8,8 @@ import requests
 import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from html.parser import HTMLParser
+from pypdf import PdfReader
+import io
 
 load_dotenv()
 
@@ -55,8 +57,8 @@ def search_web(query):
                 "X-API-KEY": os.getenv("search_api_key"),
                 "Content-Type": "application/json"
             },
-            json={"q": query},
-            timeout=20
+            json = {"q": query},
+            timeout = 20
         )
         response.raise_for_status()
         results = response.json().get("organic", [])
@@ -90,8 +92,7 @@ def searching_llm(location, start_date, end_date, pollutant, existing_sources, s
                 ALREADY-SEARCHED QUERIES — DO NOT REPEAT THESE:
                 The following exact queries were run in previous rounds. Skip them entirely and
                 do not rerun them. Use different phrasings, sites, or angles instead:
-                {json.dumps(sorted(searched_queries), indent = 16)}
-                """
+                {json.dumps(sorted(searched_queries), indent = 16)}"""
 
     messages = [
         {
@@ -109,7 +110,6 @@ def searching_llm(location, start_date, end_date, pollutant, existing_sources, s
                 - Any other unusual event that could release {pollutant} or its precursors
 
                 Do not search for or return sources already in the list above.
-                
                 {already_searched_block}
                 
                 YOU MUST FOLLOW THIS EXACT SEARCH STRATEGY IN ORDER:
@@ -161,7 +161,11 @@ def searching_llm(location, start_date, end_date, pollutant, existing_sources, s
                 (do NOT repeat any sources already in the list above), each with:
                 - title
                 - url
-                - type (e.g. Government Report, News Outlet, Social Media, etc.)
+                - type: use one of these labels exactly — "Government Report", "Government Database",
+                  "Academic Institution", "News Outlet", "Local News", "Wikipedia", "Social Media", "Other".
+                  Use "Wikipedia" for Wikipedia.org pages (not "News Outlet").
+                  Use "Academic Institution" for universities, research labs, hospital systems, and similar
+                  non-governmental academic bodies (not "Government Report").
                 - summary (one sentence of what the source says)
 
                 Do not write any explanatory text before or after the JSON.
@@ -307,6 +311,18 @@ def sort_sources(location, start_date, end_date, pollutant, sources):
               - An EPA post-incident summary published weeks after {end_date} that
                 specifically covers the spike period
 
+            IMPORTANT CLARIFICATION ON CONDITION C:
+              A source describing a specific past event (explosion, spill, accident) at a
+              facility near {location} does NOT escape Condition C simply because the facility
+              is nearby or handles {pollutant}. The event itself — not the facility's general
+              history or location — must fall within or directly document conditions during
+              {start_date}–{end_date}. Ask: "Did this event happen during the query window?"
+              If the answer is no, and the source does not explicitly document that event's
+              effects persisting into {start_date}–{end_date}, exclude it.
+              Example: A January 2018 explosion at a Henderson chlorine plant is NOT evidence
+              for a May 2018 chlorine spike, even though the same facility handles chlorine.
+              Exclude it under Condition C.
+
         STEP 1 — Assign each source an event_type (e.g. Wildfire, Industrial Accident, Power Plant Emissions,
         General Air Quality, etc.) based on what the source describes.
 
@@ -318,13 +334,16 @@ def sort_sources(location, start_date, end_date, pollutant, sources):
              NEVER interleave sources from two different event_types.
           2. Within each group, rank strictly from most to least credible using this exact tier list:
                Tier 1 (highest): Government reports / Government databases
-               Tier 2: Academic / peer-reviewed
+               Tier 2: Academic Institution / peer-reviewed (universities, research labs, hospital systems; type label: "Academic Institution")
                Tier 3: Established national news outlets
                Tier 4: Local news outlets
                Tier 5: Blogs / Non-profits / Industry publications
-               Tier 6: Wikipedia / encyclopedias  (Wikipedia is LOW credibility, below all news)
+               Tier 6: Wikipedia / encyclopedias  (Wikipedia is LOW credibility, below all news; type label: "Wikipedia")
                Tier 7 (lowest): Social media
              A lower-tier source must NEVER appear before a higher-tier source within the same group.
+             NOTE: University offices (e.g., a university EHS page, health center, or research center) are
+             Tier 2 Academic Institution — NOT Tier 1 Government.
+             Wikipedia pages are always Tier 6 Wikipedia — NOT Tier 3 News Outlet.
           3. Within each credibility tier, sort by date oldest-to-newest if sources span different months
 
         At the end of the JSON, there should be another key, 'Continue', which is either true or false. If true, then
@@ -381,6 +400,22 @@ def sort_sources(location, start_date, end_date, pollutant, sources):
                 "event_type": "Wildfire",
                 "summary": "User reports of heavy smoke in the area around the same dates."
             }},
+            "Source_6": {{
+                "title": "Princeton University EHS - Air Quality Alert June 29-30 2023",
+                "url": "https://ehs.princeton.edu/...",
+                "type": "Academic Institution",
+                "event_type": "Wildfire",
+                "date": "June 2023",
+                "summary": "University environmental health and safety office alert about wildfire smoke air quality."
+            }},
+            "Source_7": {{
+                "title": "2023 Canadian wildfires - Wikipedia",
+                "url": "https://en.wikipedia.org/wiki/2023_Canadian_wildfires",
+                "type": "Wikipedia",
+                "event_type": "Wildfire",
+                "date": "June 2023",
+                "summary": "Wikipedia article documenting the 2023 Canadian wildfire season and its effects on air quality across North America."
+            }},
             "Continue": true
         }}
     '''
@@ -392,7 +427,7 @@ def sort_sources(location, start_date, end_date, pollutant, sources):
                 "role": "user",
                 "content": prompt
             }],
-            response_format={"type": "json_object"}
+            response_format = {"type": "json_object"}
         )
     except Exception as e:
         print(f"LLM API error in sort_sources: {e}")
@@ -428,6 +463,42 @@ def _credibility_tier(source_type: str) -> int:
     if "wikipedia" in t or "encyclopedia" in t:              return 6
     if "social" in t:                                        return 7
     return 5
+
+def compute_confidence_score(sources: dict) -> dict:
+    tier_weights = {1: 10, 2: 8, 3: 5, 4: 4, 5: 3, 6: 2, 7: 1}
+    source_list = list(sources.values())
+    if not source_list:
+        return {"score": 0, "confidence": "Low", "quality": 0, "consensus": 0, "coverage": 0}
+
+    event_weights, event_counts = {}, {}
+    total_weight = 0
+    for src in source_list:
+        et = src.get("event_type", "Unknown")
+        weight = tier_weights.get(_credibility_tier(src.get("type", "")), 1)
+        event_weights[et] = event_weights.get(et, 0) + weight
+        event_counts[et] = event_counts.get(et, 0) + 1
+        total_weight += weight
+
+    total_count = len(source_list)
+    top_et = max(event_weights, key = lambda et: min(event_weights[et], 40) + round((event_counts[et] / total_count) * 30))
+    quality = min(event_weights[top_et], 40)
+    consensus = round((event_counts[top_et] / total_count) * 30)
+    coverage = min(total_weight, 30)
+    score = quality + consensus + coverage
+    confidence = "High" if score >= 70 else ("Medium" if score >= 40 else "Low")
+    
+    group_scores = {}
+    for et in event_weights:
+        g_quality = min(event_weights[et], 40)
+        g_consensus = round((event_counts[et] / total_count) * 30)
+        g_score = g_quality + g_consensus + coverage
+        group_scores[et] = {
+            "score": g_score,
+            "confidence": "High" if g_score >= 70 else ("Medium" if g_score >= 40 else "Low")
+        }
+    
+    return {"score": score, "confidence": confidence, "quality": quality, "consensus": consensus, 
+            "coverage": coverage, "group_scores": group_scores}
 
 def post_sort_sources(sources: dict) -> dict:
     group_order, groups = [], {}
@@ -467,12 +538,16 @@ class _TextExtractor(HTMLParser):
     def get_text(self):
         return re.sub(r"\s+", " ", " ".join(self._buf)).strip()
 
-
 def fetch_page_text(url):
     try:
-        resp = requests.get(url, timeout=20, headers={"User-Agent": "Mozilla/5.0"})
+        resp = requests.get(url, timeout = 20, headers = {"User-Agent": "Mozilla/5.0"})
         resp.raise_for_status()
-        if "text/html" not in resp.headers.get("Content-Type", ""):
+        content_type = resp.headers.get("Content-Type", "")
+        if "application/pdf" in content_type:
+            reader = PdfReader(io.BytesIO(resp.content))
+            text = " ".join(page.extract_text() or "" for page in reader.pages)
+            return re.sub(r"\s+", " ", text).strip()[:3000]
+        if "text/html" not in content_type:
             return ""
         extractor = _TextExtractor()
         extractor.feed(resp.text)
@@ -481,6 +556,22 @@ def fetch_page_text(url):
         return ""
 
 def synthesize_findings(location, start_date, end_date, pollutant, sources):
+    score_data = compute_confidence_score(sources)
+    
+    top_et = max(score_data["group_scores"], key = lambda k: score_data["group_scores"][k]["score"]) if score_data["group_scores"] else ""
+    group_score_lines = "\n".join(
+        f"  - {et}: {gs['score']}/100 ({gs['confidence']})"
+        for et, gs in sorted(score_data["group_scores"].items(), key = lambda x: x[1]["score"],
+        reverse = True)
+    )
+    
+    score_context = f"""The following confidence scores were computed deterministically from
+        source credibility and consensus:
+        Overall: {score_data['score']}/100 → {score_data['confidence']}
+        Per event type (descending by score):
+        {group_score_lines}
+        Top-ranked event type: {top_et}"""
+    
     enriched = {}
     with ThreadPoolExecutor(max_workers = 8) as executor:
         futures = {executor.submit(fetch_page_text, src.get("url", "")): (key, src)
@@ -495,19 +586,34 @@ def synthesize_findings(location, start_date, end_date, pollutant, sources):
         of text fetched directly from the source URL (may be empty if the page was inaccessible).
 
         {json.dumps(enriched, indent = 2)}
+        
+        {score_context}
 
         Analyze these sources for an environmental analyst and return ONLY a JSON object with
         these exact keys (no prose before or after the JSON):
 
         {{
-          "most_likely_cause": "One sentence naming the most likely cause of the {pollutant} spike, citing specific source titles. Explicitly state whether the identified event would plausibly release {pollutant} or its precursors.",
+          "most_likely_cause": "One sentence identifying {top_et} as the most likely cause of
+           the {pollutant} spike (it has the highest confidence score), citing specific source titles.
+           Explicitly state whether this event would plausibly release {pollutant} or its precursors. If
+           the fetched source text strongly contradicts this ranking, note the discrepancy.",
           "key_evidence": ["Bullet citing source 1 — include any direct mention of {pollutant} if found", "Bullet citing source 2", "Bullet citing source 3"],
           "gaps_and_alternatives": ["Gap or alternative explanation 1", "Gap 2"],
-          "confidence": "High or Medium or Low",
-          "confidence_rationale": "One sentence explaining the confidence rating based on source quality and how well the evidence connects to {pollutant} specifically."
+          "confidence_rationale": "One sentence explaining why the evidence warrants an overall 
+           score of {score_data['score']}/100 ({score_data['confidence']}) — what specifically drives 
+           the score up or down (e.g. source credibility, degree of consensus across event types, total 
+           volume of evidence).",
+          "group_confidence": {{
+            "<event_type exactly as it appears in the sources>": {{
+              "rationale": "One sentence explaining why this event type received its computed
+               score (visible in the score context above) — what makes its sources stronger or weaker than
+               competing event types."
+            }}
+          }}
         }}
 
-        Be concise and specific. Ground claims in the source text above; do not invent facts.
+        For group_confidence, include one entry per distinct event_type value present in the sources above.
+        Use the exact event_type string as the key. Be concise and specific. Ground claims in the source text above; do not invent facts.
     """
     try:
         response = client.chat.completions.create(
@@ -522,7 +628,9 @@ def synthesize_findings(location, start_date, end_date, pollutant, sources):
     try:
         text = response.choices[0].message.content
         text = re.sub(r"```[a-z]*", "", text).strip()
-        return json.loads(text)
+        result = json.loads(text)
+        result.update(score_data)
+        return result
     except json.JSONDecodeError:
         print("Invalid JSON in synthesis_findings()")
         return text
@@ -531,7 +639,7 @@ st.title("Pollution Event Web Searcher")
 st.session_state.location = st.text_input("Location")
 st.session_state.start_date = st.date_input("Start Date", min_value = datetime.date(2000, 1, 1))
 st.session_state.end_date = st.date_input("End Date", min_value = datetime.date(2000, 1, 1))
-st.session_state.pollutant = st.text_input("Pollutant", placeholder = "e.g. PM2.5, ethylene, VOCs")
+st.session_state.pollutant = st.text_input("Pollutant", placeholder="e.g. PM2.5, ethylene, VOCs")
 
 if st.session_state.location and st.session_state.start_date and \
 st.session_state.end_date and st.session_state.pollutant:
@@ -572,7 +680,7 @@ st.session_state.end_date and st.session_state.pollutant:
                 print(f"Trial {count}: {st.session_state.sources}")
                 count += 1
 
-            status.update(label=f"Done — found {len(st.session_state.sources)} sources", state="complete", expanded=False)
+            status.update(label = f"Done — found {len(st.session_state.sources)} sources", state = "complete", expanded = False)
 
         with st.spinner("Synthesizing findings..."):
             synthesis = synthesize_findings(
@@ -598,12 +706,14 @@ st.session_state.end_date and st.session_state.pollutant:
                     st.markdown(f"- {point}")
 
             confidence = synthesis.get("confidence", "")
+            score = synthesis.get("score", 0)
             color = {"HIGH": "green", "MEDIUM": "orange", "LOW": "red"}.get(confidence.upper(), "gray")
             st.markdown(
                 f'<span style="color:{color};font-weight:bold">Confidence: {confidence}</span>'
-                f' — {synthesis.get("confidence_rationale", "")}',
-                unsafe_allow_html=True
+                f' &nbsp;·&nbsp; <span style="font-size:1.1em"><b>{score}/100</b></span>',
+                unsafe_allow_html = True
             )
+            st.markdown(synthesis.get("confidence_rationale", ""))
         else:
             st.info(synthesis)
 
@@ -616,11 +726,38 @@ st.session_state.end_date and st.session_state.pollutant:
 
         for event_type, group_sources in groups.items():
             st.header(event_type)
+            gs = synthesis.get("group_scores", {}).get(event_type, {}) if isinstance(synthesis, dict) else {}
+            gc = synthesis.get("group_confidence", {}).get(event_type, {}) if isinstance(synthesis, dict) else {}
+            if gs:
+                g_conf = gs.get("confidence", "")
+                g_score = gs.get("score", 0)
+                color = {"HIGH": "green", "MEDIUM": "orange", "LOW": "red"}.get(g_conf.upper(), "gray")
+                st.markdown(
+                    f'<span style="color:{color};font-weight:bold">Confidence this is the cause: {g_conf}</span>'
+                    f' &nbsp;·&nbsp; <b>{g_score}/100</b>'
+                    f' — {gc.get("rationale", "")}',
+                    unsafe_allow_html = True
+                )
+                
             for i, source in enumerate(group_sources, 1):
                 st.subheader(f"Source {i}: {source['title']}")
                 st.write(f"**Type:** {source['type']}")
                 if source.get("date"):
-                    st.write(f"**Date:** {source['date']}")
+                    date_str = source['date']
+                    date_warning = ""
+                    _month_map = {"january": 1,"february": 2,"march": 3,"april": 4,"may": 5,"june": 6,
+                                  "july": 7,"august": 8,"september": 9,"october": 10,"november": 11,"december": 12}
+                    _m = re.search(r'(\w+)\s+(\d{4})', date_str, re.IGNORECASE)
+                    if _m:
+                        _mon = _month_map.get(_m.group(1).lower())
+                        _yr = int(_m.group(2))
+                        if _mon:
+                            _src_date = datetime.date(_yr, _mon, 1)
+                            _window_start = st.session_state.start_date - datetime.timedelta(days = 60)
+                            _window_end = st.session_state.end_date + datetime.timedelta(days = 60)
+                            if _src_date < _window_start or _src_date > _window_end:
+                                date_warning = " **(⚠ outside query window)**"
+                    st.write(f"**Date:** {date_str}{date_warning}")
                 st.write(f"**Summary:** {source['summary']}")
                 st.write(f"**URL:** {source['url']}")
                 st.divider()
