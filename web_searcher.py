@@ -13,7 +13,7 @@ import io
 
 load_dotenv()
 
-client = OpenAI(api_key=os.getenv("api_key"), base_url = "https://api.deepseek.com")
+client = OpenAI(api_key = os.getenv("api_key"), base_url = "https://api.deepseek.com")
 
 if "location" not in st.session_state:
     st.session_state.location = ""
@@ -261,11 +261,15 @@ def sort_sources(location, start_date, end_date, pollutant, sources):
             (a2) The source does not document any direct effect (smoke, emissions, contamination)
                  reaching {location} or its surrounding area
 
-          POLLUTANT RELEVANCE NOTE: The spike being investigated is specifically for {pollutant}.
+          POLLUTANT RELEVANCE NOTE (applies to Condition A only — geographic relevance):
+            The spike being investigated is specifically for {pollutant}.
             Sources that explicitly mention {pollutant} or known precursors/co-pollutants of {pollutant}
-            are highly relevant. Sources describing events that could not plausibly release {pollutant}
+            are geographically relevant. Sources describing events that could not plausibly release {pollutant}
             (e.g., a wildfire when the pollutant is a heavy metal) may be excluded under Condition A
             unless they document direct effects reaching {location}.
+            IMPORTANT: This note applies ONLY to Condition A (geographic scope). Mentioning {pollutant}
+            does NOT exempt a source from Condition B (must document a specific incident, not routine
+            administrative content) or Condition C (event must fall within the spike window).
 
           CONDITION B — Not a specific event: The source is routine monitoring data, an annual
             program report, a permit application or reclassification, or any other background /
@@ -275,6 +279,14 @@ def sort_sources(location, start_date, end_date, pollutant, sources):
               - Air quality monitoring dashboards showing routine historical data (no incident)
               - Annual air quality program updates or ozone advance reports
               - Operating permit applications, renewals, or reclassifications
+              - Permit attachments or annexes listing chemicals handled at a facility (e.g.,
+                "Attachments to Draft RCRA Permit listing methanol as a hazardous waste" — this
+                documents that a facility handles the chemical, NOT that a release occurred)
+              - Hazardous waste management notices, proposed exclusions, or reclassifications
+              - Title V air permit program reviews documenting routine regulatory oversight
+              - State environmental agency reviews of incomplete or pending permit applications
+              - Any document showing a facility handles {pollutant} without documenting a
+                specific release, spill, or emission event
               - General background information about a facility or region
             Keep examples:
               - Incident reports for a specific fire, spill, explosion, or accident
@@ -305,6 +317,9 @@ def sort_sources(location, start_date, end_date, pollutant, sources):
               - An article from December 2021 about a wildfire when the spike is March 2021
                 (describes a different, later event; cannot be causal)
               - A news story from 2019 about a facility when the spike is 2021
+              - A routine emission test report from March 2018 at a facility when the spike is
+                February 2019 — the test predates the window by nearly a year and is not a
+                retrospective report about the Feb 2019 spike; exclude it under Condition C
             Keep examples:
               - A CSB investigation report published June 2021 about an accident that
                 occurred in March 2021
@@ -378,29 +393,6 @@ def sort_sources(location, start_date, end_date, pollutant, sources):
                 "summary": "Air quality index readings spiking in the region during the relevant period."
             }},
             "Source_3": {{
-                "title": "Reuters - Massive wildfire spreads across Northern California",
-                "url": "https://www.reuters.com/...",
-                "type": "News Outlet",
-                "event_type": "Wildfire",
-                "date": "July 2021",
-                "summary": "News coverage reporting the fire's spread and affected counties."
-            }},
-            "Source_4": {{
-                "title": "CSB Investigation Report - Refinery Explosion",
-                "url": "https://www.csb.gov/...",
-                "type": "Government Report",
-                "event_type": "Industrial Accident",
-                "date": "March 2021",
-                "summary": "Chemical Safety Board report on the refinery explosion and resulting emissions."
-            }},
-            "Source_5": {{
-                "title": "Reddit post - r/California - Anyone else seeing crazy smoke?",
-                "url": "https://www.reddit.com/...",
-                "type": "Social Media",
-                "event_type": "Wildfire",
-                "summary": "User reports of heavy smoke in the area around the same dates."
-            }},
-            "Source_6": {{
                 "title": "Princeton University EHS - Air Quality Alert June 29-30 2023",
                 "url": "https://ehs.princeton.edu/...",
                 "type": "Academic Institution",
@@ -408,13 +400,36 @@ def sort_sources(location, start_date, end_date, pollutant, sources):
                 "date": "June 2023",
                 "summary": "University environmental health and safety office alert about wildfire smoke air quality."
             }},
-            "Source_7": {{
+            "Source_4": {{
+                "title": "Reuters - Massive wildfire spreads across Northern California",
+                "url": "https://www.reuters.com/...",
+                "type": "News Outlet",
+                "event_type": "Wildfire",
+                "date": "July 2021",
+                "summary": "News coverage reporting the fire's spread and affected counties."
+            }},
+            "Source_5": {{
                 "title": "2023 Canadian wildfires - Wikipedia",
                 "url": "https://en.wikipedia.org/wiki/2023_Canadian_wildfires",
                 "type": "Wikipedia",
                 "event_type": "Wildfire",
                 "date": "June 2023",
                 "summary": "Wikipedia article documenting the 2023 Canadian wildfire season and its effects on air quality across North America."
+            }},
+            "Source_6": {{
+                "title": "Reddit post - r/California - Anyone else seeing crazy smoke?",
+                "url": "https://www.reddit.com/...",
+                "type": "Social Media",
+                "event_type": "Wildfire",
+                "summary": "User reports of heavy smoke in the area around the same dates."
+            }},
+            "Source_7": {{
+                "title": "CSB Investigation Report - Refinery Explosion",
+                "url": "https://www.csb.gov/...",
+                "type": "Government Report",
+                "event_type": "Industrial Accident",
+                "date": "March 2021",
+                "summary": "Chemical Safety Board report on the refinery explosion and resulting emissions."
             }},
             "Continue": true
         }}
@@ -635,11 +650,11 @@ def synthesize_findings(location, start_date, end_date, pollutant, sources):
         print("Invalid JSON in synthesis_findings()")
         return text
 
-st.title("Pollution Event Web Searcher")
+st.title("Pollution Event Web Search")
 st.session_state.location = st.text_input("Location")
 st.session_state.start_date = st.date_input("Start Date", min_value = datetime.date(2000, 1, 1))
 st.session_state.end_date = st.date_input("End Date", min_value = datetime.date(2000, 1, 1))
-st.session_state.pollutant = st.text_input("Pollutant", placeholder="e.g. PM2.5, ethylene, VOCs")
+st.session_state.pollutant = st.text_input("Pollutant", placeholder = "e.g. PM2.5, ethylene, VOCs")
 
 if st.session_state.location and st.session_state.start_date and \
 st.session_state.end_date and st.session_state.pollutant:
