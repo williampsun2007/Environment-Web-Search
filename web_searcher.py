@@ -653,7 +653,9 @@ def synthesize_findings(location, start_date, end_date, pollutant, sources):
 with st.sidebar:
     st.header("API Keys")
     st.text_input("DeepSeek API Key", type = "password", key = "deepseek_key")
+    st.caption("Get your key at [platform.deepseek.com/api_keys](https://platform.deepseek.com/api_keys)")
     st.text_input("Google Serper API Key", type = "password", key = "serper_key")
+    st.caption("Get your key at [serper.dev](https://serper.dev)")
     st.caption(
         "Keys are used only for this session and are sent directly to DeepSeek and Serper. "
         "They are never stored, logged, or routed through any intermediate server."
