@@ -1,8 +1,6 @@
 import streamlit as st
 import json
 from openai import OpenAI
-from dotenv import load_dotenv
-import os
 import re
 import requests
 import datetime
@@ -10,10 +8,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from html.parser import HTMLParser
 from pypdf import PdfReader
 import io
-
-load_dotenv()
-
-client = OpenAI(api_key = os.getenv("api_key"), base_url = "https://api.deepseek.com")
 
 if "location" not in st.session_state:
     st.session_state.location = ""
@@ -25,6 +19,12 @@ if "pollutant" not in st.session_state:
     st.session_state.pollutant = ""
 if "sources" not in st.session_state:
     st.session_state.sources = {}
+if "deepseek_key" not in st.session_state:
+    st.session_state.deepseek_key = ""
+if "serper_key" not in st.session_state:
+    st.session_state.serper_key = ""
+if "search_model" not in st.session_state:
+    st.session_state.search_model = "deepseek-reasoner"
     
 tools = [
     {
@@ -54,7 +54,7 @@ def search_web(query):
         response = requests.post(
             "https://google.serper.dev/search",
             headers={
-                "X-API-KEY": os.getenv("search_api_key"),
+                "X-API-KEY": st.session_state.serper_key,
                 "Content-Type": "application/json"
             },
             json = {"q": query},
@@ -75,7 +75,7 @@ def search_web(query):
 
     return simplified
     
-def searching_llm(location, start_date, end_date, pollutant, existing_sources, searched_queries = None):
+def searching_llm(location, start_date, end_date, pollutant, existing_sources, searched_queries = None, model = "deepseek-reasoner"):
     if searched_queries is None:
         searched_queries = set()
 
@@ -187,7 +187,7 @@ def searching_llm(location, start_date, end_date, pollutant, existing_sources, s
     # appends the results to the message history, or breaks out when the model
     # produces a plain text (JSON) response.
     while True:
-        call_kwargs = {"model": "deepseek-reasoner", "messages": messages}
+        call_kwargs = {"model": model, "messages": messages}
         if not nudge_sent:
             call_kwargs["tools"] = tools
         try:
@@ -650,6 +650,22 @@ def synthesize_findings(location, start_date, end_date, pollutant, sources):
         print("Invalid JSON in synthesis_findings()")
         return text
 
+with st.sidebar:
+    st.header("API Keys")
+    st.text_input("DeepSeek API Key", type = "password", key = "deepseek_key")
+    st.text_input("Google Serper API Key", type = "password", key = "serper_key")
+    st.caption(
+        "Keys are used only for this session and are sent directly to DeepSeek and Serper. "
+        "They are never stored, logged, or routed through any intermediate server."
+    )
+    st.divider()
+    st.header("Settings")
+    model_choice = st.selectbox(
+        "Search model",
+        ["deepseek-reasoner (thorough)", "deepseek-chat (fast, cheaper)"],
+    )
+    st.session_state.search_model = model_choice.split()[0]
+
 st.title("Pollution Event Web Search")
 st.session_state.location = st.text_input("Location")
 st.session_state.start_date = st.date_input("Start Date", min_value = datetime.date(2000, 1, 1))
@@ -659,6 +675,12 @@ st.session_state.pollutant = st.text_input("Pollutant", placeholder = "e.g. PM2.
 if st.session_state.location and st.session_state.start_date and \
 st.session_state.end_date and st.session_state.pollutant:
     if st.button("Search"):
+        if not st.session_state.deepseek_key or not st.session_state.serper_key:
+            st.error("Please enter both API keys in the sidebar before searching.")
+            st.stop()
+
+        client = OpenAI(api_key = st.session_state.deepseek_key, base_url = "https://api.deepseek.com")
+
         st.session_state.sources = {}
 
         with st.status("Searching...", expanded = True) as status:
@@ -666,7 +688,7 @@ st.session_state.end_date and st.session_state.pollutant:
             st.write(f"**Round 1** — Searching for {st.session_state.pollutant} events near {st.session_state.location}")
             new_sources = searching_llm(st.session_state.location, st.session_state.start_date,
                                 st.session_state.end_date, st.session_state.pollutant, st.session_state.sources,
-                                searched_queries)
+                                searched_queries, st.session_state.search_model)
             offset = len(st.session_state.sources)
             merged = dedupe_sources({**st.session_state.sources,
                       **{f"Source_{offset + i + 1}": v for i, v in enumerate(new_sources.values())}})
@@ -683,7 +705,7 @@ st.session_state.end_date and st.session_state.pollutant:
                 st.write(f"**Round {count}** — Refining with {len(st.session_state.sources)} sources so far")
                 new_sources = searching_llm(st.session_state.location, st.session_state.start_date,
                                     st.session_state.end_date, st.session_state.pollutant, st.session_state.sources,
-                                    searched_queries)
+                                    searched_queries, st.session_state.search_model)
                 offset = len(st.session_state.sources)
                 merged = dedupe_sources({**st.session_state.sources,
                           **{f"Source_{offset + i + 1}": v for i, v in enumerate(new_sources.values())}})
