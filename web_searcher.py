@@ -554,10 +554,39 @@ def post_sort_sources(sources: dict) -> dict:
 
     result, i = {}, 1
     for et in group_order:
-        for src in sorted(groups[et], key=lambda s: _credibility_tier(s.get("type", ""))):
+        for src in sorted(groups[et], key = lambda s: _credibility_tier(s.get("type", ""))):
             result[f"Source_{i}"] = src
             i += 1
     return result
+
+def run_search_pipeline(loc, start, end, poll, model):
+    sources = {}
+    searched_queries = set()
+
+    st.write(f"**Round 1** — Searching for {poll} events near {loc}")
+    new_sources = searching_llm(loc, start, end, poll, sources, searched_queries, model)
+    offset = len(sources)
+    merged = dedupe_sources({**sources,
+              **{f"Source_{offset + i + 1}": v for i, v in enumerate(new_sources.values())}})
+    st.write(f"Ranking {len(merged)} sources...")
+    result = sort_sources(loc, start, end, poll, merged)
+    sorted_sources = {k: v for k, v in result.items() if k != "Continue"}
+    sources = post_sort_sources(sorted_sources) if sorted_sources else merged
+
+    count = 2
+    while result.get("Continue", False) and count <= 5:
+        st.write(f"**Round {count}** — Refining with {len(sources)} sources so far")
+        new_sources = searching_llm(loc, start, end, poll, sources, searched_queries, model)
+        offset = len(sources)
+        merged = dedupe_sources({**sources,
+                  **{f"Source_{offset + i + 1}": v for i, v in enumerate(new_sources.values())}})
+        st.write(f"Ranking {len(merged)} sources...")
+        result = sort_sources(loc, start, end, poll, merged)
+        sorted_sources = {k: v for k, v in result.items() if k != "Continue"}
+        sources = post_sort_sources(sorted_sources) if sorted_sources else merged
+        count += 1
+
+    return sources
 
 class _TextExtractor(HTMLParser):
     _skip = {"script", "style", "head", "nav", "footer"}
@@ -785,6 +814,7 @@ def _display_single_results(sources, synthesis, start_date, end_date):
                 f' — {gc.get("rationale", "")}',
                 unsafe_allow_html = True
             )
+            
         for i, source in enumerate(group_sources, 1):
             st.subheader(f"Source {i}: {source['title']}")
             st.write(f"**Type:** {source['type']}")
@@ -796,6 +826,7 @@ def _display_single_results(sources, synthesis, start_date, end_date):
                     "may": 5, "june": 6, "july": 7, "august": 8,
                     "september": 9, "october": 10, "november": 11, "december": 12
                 }
+                
                 _m = re.search(r'(\w+)\s+(\d{4})', date_str, re.IGNORECASE)
                 if _m:
                     _mon = _month_map.get(_m.group(1).lower())
@@ -873,34 +904,9 @@ with tab1:
         
         try:
             with st.status("Searching...", expanded = True) as status:
-                searched_queries = set()
-                st.write(f"**Round 1** — Searching for {poll} events near {loc}")
-                new_sources = searching_llm(loc, start, end, poll, st.session_state.sources,
-                                            searched_queries, st.session_state.search_model)
-                offset = len(st.session_state.sources)
-                merged = dedupe_sources({**st.session_state.sources,
-                          **{f"Source_{offset + i + 1}": v for i, v in enumerate(new_sources.values())}})
-                st.write(f"Ranking {len(merged)} sources...")
-                result = sort_sources(loc, start, end, poll, merged)
-                sorted_sources = {k: v for k, v in result.items() if k != "Continue"}
-                st.session_state.sources = post_sort_sources(sorted_sources) if sorted_sources else merged
-                print(f"Trial 1: {st.session_state.sources}")
-
-                count = 2
-                while result.get("Continue", False) and count <= 5:
-                    st.write(f"**Round {count}** — Refining with {len(st.session_state.sources)} sources so far")
-                    new_sources = searching_llm(loc, start, end, poll, st.session_state.sources,
-                                                searched_queries, st.session_state.search_model)
-                    offset = len(st.session_state.sources)
-                    merged = dedupe_sources({**st.session_state.sources,
-                              **{f"Source_{offset + i + 1}": v for i, v in enumerate(new_sources.values())}})
-                    st.write(f"Ranking {len(merged)} sources...")
-                    result = sort_sources(loc, start, end, poll, merged)
-                    sorted_sources = {k: v for k, v in result.items() if k != "Continue"}
-                    st.session_state.sources = post_sort_sources(sorted_sources) if sorted_sources else merged
-                    print(f"Trial {count}: {st.session_state.sources}")
-                    count += 1
-
+                st.session_state.sources = run_search_pipeline(
+                    loc, start, end, poll, st.session_state.search_model
+                )
                 status.update(label = f"Done — found {len(st.session_state.sources)} sources",
                               state = "complete", expanded = False)
 
@@ -920,7 +926,11 @@ with tab1:
             st.session_state.start_date,
             st.session_state.end_date
         )
-
+        
+        if st.button("🔄 New Search (clears current results)"):
+            st.session_state.sources = {}
+            st.session_state.synthesis = None
+            st.rerun()
 
 # Code for Tab #2 - Batch Search
 with tab2:
@@ -951,7 +961,7 @@ with tab2:
             n_valid = len(valid_rows)
             st.success(f"{n_valid} valid {'search' if n_valid == 1 else 'searches'} found.")
             if n_valid > 20:
-                est_hours = max(10, round(n_valid * 3 / 60, 0))
+                est_hours = max(1, round(n_valid * 3 / 60, 0))
                 st.warning(
                     f"Each search typically takes 1-5 minutes."
                     f"{n_valid} searches may take approximately {est_hours}+ hours."
@@ -981,6 +991,7 @@ with tab2:
 
     if st.session_state._pending_batch:
         st.session_state._pending_batch = False
+        
         rows = st.session_state._batch_rows
         n = len(rows)
         client = OpenAI(api_key = st.session_state.deepseek_key, base_url = "https://api.deepseek.com")
@@ -990,18 +1001,19 @@ with tab2:
         summary_ws.title = "Summary"
         sources_ws = wb.create_sheet("Sources")
 
-        summary_ws.append([
-            "Search #", "Location", "Start Date", "End Date", "Pollutant",
-            "Score", "Confidence", "Most Likely Cause", "Source Count", "Error"
-        ])
-        sources_ws.append([
-            "Search #", "Location", "Pollutant", "Source #",
-            "Title", "URL", "Type", "Event Type", "Date", "Summary"
-        ])
-        
+        summary_ws.append(["Search #", "Location", "Start Date", "End Date", "Pollutant",
+                            "Score", "Confidence", "Most Likely Cause", "Source Count", "Error"])
+        sources_ws.append(["Search #", "Location", "Pollutant", "Source #",
+                            "Title", "URL", "Type", "Event Type", "Date", "Summary"])
+
         _style_header(summary_ws)
         _style_header(sources_ws)
 
+        st.session_state.batch_excel = _wb_to_bytes(wb)
+        
+        if st.button("⛔ Stop and Download Current Results"):
+            st.rerun()
+        
         progress_bar = st.progress(0, text = "Starting batch search...")
         status_text = st.empty()
 
@@ -1020,30 +1032,7 @@ with tab2:
                 synthesis = {}
                 try:
                     with st.expander(f"Search {i} / {n}: {loc} — {poll}", expanded = False):
-                        searched_queries = set()
-                        st.write("**Round 1**")
-                        new_sources = searching_llm(loc, start, end, poll, sources,
-                                                    searched_queries, st.session_state.search_model)
-                        offset = len(sources)
-                        merged = dedupe_sources({**sources,
-                                  **{f"Source_{offset + j + 1}": v for j, v in enumerate(new_sources.values())}})
-                        result = sort_sources(loc, start, end, poll, merged)
-                        sorted_sources = {k: v for k, v in result.items() if k != "Continue"}
-                        sources = post_sort_sources(sorted_sources) if sorted_sources else merged
-
-                        count = 2
-                        while result.get("Continue", False) and count <= 5:
-                            st.write(f"**Round {count}**")
-                            new_sources = searching_llm(loc, start, end, poll, sources,
-                                                        searched_queries, st.session_state.search_model)
-                            offset = len(sources)
-                            merged = dedupe_sources({**sources,
-                                      **{f"Source_{offset + j + 1}": v for j, v in enumerate(new_sources.values())}})
-                            result = sort_sources(loc, start, end, poll, merged)
-                            sorted_sources = {k: v for k, v in result.items() if k != "Continue"}
-                            sources = post_sort_sources(sorted_sources) if sorted_sources else merged
-                            count += 1
-
+                        sources = run_search_pipeline(loc, start, end, poll, st.session_state.search_model)
                         st.write("Synthesizing...")
                         synthesis = synthesize_findings(loc, start, end, poll, sources)
                 except Exception as e:
