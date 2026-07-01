@@ -331,6 +331,11 @@ def sort_sources(location, start_date, end_date, pollutant, sources):
               air quality conditions, unless they document that the forecasted conditions
               actually occurred (e.g., a seasonal wildfire outlook that only projects risk,
               not a confirmed incident)
+            - Smoke management plans, air quality management plans, state implementation
+              plans, or other regulatory/procedural frameworks describing how agencies
+              control or respond to emissions (e.g., "Oklahoma Smoke Management Plan",
+              "State Smoke Management Plan", "Emission Reduction Plan") — these describe
+              protocols, not specific events
 
           CONDITION C — Temporal irrelevance: Exclude a source if BOTH of the following are true:
             (c1) The source's publication date or the event it describes falls clearly outside
