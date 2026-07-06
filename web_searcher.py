@@ -185,6 +185,11 @@ def searching_llm(location, start_date, end_date, pollutant, existing_sources, s
                   Use "Wikipedia" for Wikipedia.org pages (not "News Outlet").
                   Use "Academic Institution" for universities, research labs, hospital systems, and similar
                   non-governmental academic bodies (not "Government Report").
+                  Use "Government Report" for a post published directly by an official government agency's
+                  own account (e.g., a state environmental agency's Facebook or Twitter/X page announcing
+                  an official advisory or statement) — NOT "Social Media". Reserve "Social Media" for posts
+                  by private individuals, unofficial commentary, or discussion that the agency itself did
+                  not publish.
                 - summary (one sentence of what the source says)
 
                 Do not write any explanatory text before or after the JSON.
@@ -390,6 +395,10 @@ def sort_sources(location, start_date, end_date, pollutant, sources):
              NOTE: University offices (e.g., a university EHS page, health center, or research center) are
              Tier 2 Academic Institution — NOT Tier 1 Government.
              Wikipedia pages are always Tier 6 Wikipedia — NOT Tier 3 News Outlet.
+             A post published directly by an official government agency's own account (e.g., a state
+             environmental agency's Facebook or Twitter/X page announcing an official advisory) is Tier 1
+             Government Report — NOT Tier 7 Social Media. Tier 7 Social Media is reserved for posts by
+             private individuals, unofficial commentary, or discussion the agency itself did not publish.
           3. Within each credibility tier, sort by date oldest-to-newest if sources span different months
 
         At the end of the JSON, there should be another key, 'Continue', which is either true or false. If true, then
@@ -455,6 +464,14 @@ def sort_sources(location, start_date, end_date, pollutant, sources):
                 "summary": "User reports of heavy smoke in the area around the same dates."
             }},
             "Source_7": {{
+                "title": "California Air Resources Board - Facebook post: Air quality advisory issued",
+                "url": "https://www.facebook.com/CaliforniaARB/posts/...",
+                "type": "Government Report",
+                "event_type": "Wildfire",
+                "date": "July 2021",
+                "summary": "Official agency Facebook post announcing an air quality health advisory due to wildfire smoke — Government Report tier, not Social Media, because it is the agency's own official statement."
+            }},
+            "Source_8": {{
                 "title": "CSB Investigation Report - Refinery Explosion",
                 "url": "https://www.csb.gov/...",
                 "type": "Government Report",
