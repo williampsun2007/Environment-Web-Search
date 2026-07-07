@@ -529,7 +529,31 @@ def _credibility_tier(source_type: str) -> int:
     if "social" in t:                                        return 7
     return 5
 
-def compute_confidence_score(sources: dict) -> dict:
+_MONTH_MAP = {
+    "january": 1, "february": 2, "march": 3, "april": 4,
+    "may": 5, "june": 6, "july": 7, "august": 8,
+    "september": 9, "october": 10, "november": 11, "december": 12
+}
+
+def _source_in_window(date_str, start_date, end_date, tolerance_days = 60):
+    if not date_str:
+        return None
+    
+    m = re.search(r'(\w+)\s+(\d{4})', date_str, re.IGNORECASE)
+    if not m:
+        return None
+    mon = _MONTH_MAP.get(m.group(1).lower())
+    if not mon:
+        return None
+    
+    src_date = datetime.date(int(m.group(2)), mon, 1)
+    window_start = start_date - datetime.timedelta(days = tolerance_days)
+    window_end = end_date + datetime.timedelta(days = tolerance_days)
+    return window_start <= src_date <= window_end
+
+OUT_OF_WINDOW_DISCOUNT = 0.25
+
+def compute_confidence_score(sources: dict, start_date = None, end_date = None) -> dict:
     tier_weights = {1: 10, 2: 8, 3: 5, 4: 4, 5: 3, 6: 2, 7: 1}
     source_list = list(sources.values())
     if not source_list:
@@ -540,21 +564,24 @@ def compute_confidence_score(sources: dict) -> dict:
     for src in source_list:
         et = src.get("event_type", "Unknown")
         weight = tier_weights.get(_credibility_tier(src.get("type", "")), 1)
-        event_weights[et] = event_weights.get(et, 0) + weight
-        event_counts[et] = event_counts.get(et, 0) + 1
-        total_weight += weight
+        discount = 1
+        if start_date and end_date and _source_in_window(src.get("date", ""), start_date, end_date) is False:
+            discount = OUT_OF_WINDOW_DISCOUNT
+        event_weights[et] = event_weights.get(et, 0) + weight * discount
+        event_counts[et] = event_counts.get(et, 0) + discount
+        total_weight += weight * discount
 
     total_count = len(source_list)
     top_et = max(event_weights, key = lambda et: min(event_weights[et], 40) + round((event_counts[et] / total_count) * 30))
-    quality = min(event_weights[top_et], 40)
+    quality = round(min(event_weights[top_et], 40))
     consensus = round((event_counts[top_et] / total_count) * 30)
-    coverage = min(total_weight, 30)
+    coverage = round(min(total_weight, 30))
     score = quality + consensus + coverage
     confidence = "High" if score >= 70 else ("Medium" if score >= 40 else "Low")
 
     group_scores = {}
     for et in event_weights:
-        g_quality = min(event_weights[et], 40)
+        g_quality = round(min(event_weights[et], 40))
         g_consensus = round((event_counts[et] / total_count) * 30)
         g_score = g_quality + g_consensus + coverage
         group_scores[et] = {
@@ -650,7 +677,7 @@ def fetch_page_text(url):
         return ""
 
 def synthesize_findings(location, start_date, end_date, pollutant, sources):
-    score_data = compute_confidence_score(sources)
+    score_data = compute_confidence_score(sources, start_date, end_date)
 
     top_et = max(score_data["group_scores"], key = lambda k: score_data["group_scores"][k]["score"]) if score_data["group_scores"] else ""
     group_score_lines = "\n".join(
@@ -842,23 +869,7 @@ def _display_single_results(sources, synthesis, start_date, end_date):
             st.write(f"**Type:** {source['type']}")
             if source.get("date"):
                 date_str = source["date"]
-                date_warning = ""
-                _month_map = {
-                    "january": 1, "february": 2, "march": 3, "april": 4,
-                    "may": 5, "june": 6, "july": 7, "august": 8,
-                    "september": 9, "october": 10, "november": 11, "december": 12
-                }
-                
-                _m = re.search(r'(\w+)\s+(\d{4})', date_str, re.IGNORECASE)
-                if _m:
-                    _mon = _month_map.get(_m.group(1).lower())
-                    _yr = int(_m.group(2))
-                    if _mon:
-                        _src_date = datetime.date(_yr, _mon, 1)
-                        _window_start = start_date - datetime.timedelta(days = 60)
-                        _window_end = end_date + datetime.timedelta(days = 60)
-                        if _src_date < _window_start or _src_date > _window_end:
-                            date_warning = " **(⚠ outside query window)**"
+                date_warning = " **(⚠ outside query window)**" if _source_in_window(date_str, start_date, end_date) is False else ""
                 st.write(f"**Date:** {date_str}{date_warning}")
             st.write(f"**Summary:** {source['summary']}")
             st.write(f"**URL:** {source['url']}")
