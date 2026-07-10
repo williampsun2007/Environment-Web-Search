@@ -659,22 +659,42 @@ class _TextExtractor(HTMLParser):
     def get_text(self):
         return re.sub(r"\s+", " ", " ".join(self._buf)).strip()
 
+_PAGE_FETCH_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,application/pdf,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+}
+
 def fetch_page_text(url):
     try:
-        resp = requests.get(url, timeout = 20, headers = {"User-Agent": "Mozilla/5.0"})
+        resp = requests.get(url, timeout = 20, headers = _PAGE_FETCH_HEADERS)
         resp.raise_for_status()
         content_type = resp.headers.get("Content-Type", "")
+
+        looks_like_pdf = url.lower().split("?")[0].endswith(".pdf")
+        if looks_like_pdf and "pdf" not in content_type.lower() and len(resp.content) < 1000:
+            print(f"fetch_page_text blocked (likely bot-protection challenge page) for {url}: "
+                  f"expected PDF but got {len(resp.content)} bytes of '{content_type}'")
+            return {"text": "", "status": "blocked"}
+
         if "application/pdf" in content_type:
             reader = PdfReader(io.BytesIO(resp.content))
             text = " ".join(page.extract_text() or "" for page in reader.pages)
-            return re.sub(r"\s+", " ", text).strip()[:3000]
+            text = re.sub(r"\s+", " ", text).strip()[:3000]
+            return {"text": text, "status": "ok" if text else "empty"}
+
         if "text/html" not in content_type:
-            return ""
+            print(f"fetch_page_text skipped unsupported content-type '{content_type}' for {url}")
+            return {"text": "", "status": "error"}
+
         extractor = _TextExtractor()
         extractor.feed(resp.text)
-        return extractor.get_text()[:3000]
-    except Exception:
-        return ""
+        text = extractor.get_text()[:3000]
+        return {"text": text, "status": "ok" if text else "empty"}
+    except Exception as e:
+        print(f"fetch_page_text failed for {url}: {e}")
+        return {"text": "", "status": "error"}
 
 def synthesize_findings(location, start_date, end_date, pollutant, sources):
     score_data = compute_confidence_score(sources, start_date, end_date)
@@ -693,18 +713,32 @@ def synthesize_findings(location, start_date, end_date, pollutant, sources):
         {group_score_lines}
         Top-ranked event type: {top_et}"""
 
+    _STATUS_NOTE = {
+        "ok": "",
+        "empty": "page text unavailable — page fetched successfully but contained no extractable text",
+        "blocked": "page text unavailable — site blocked automated access (bot-protection challenge page)",
+        "error": "page text unavailable — the page could not be fetched (network error or unsupported content type)",
+    }
+
     enriched = {}
     with ThreadPoolExecutor(max_workers = 8) as executor:
         futures = {executor.submit(fetch_page_text, src.get("url", "")): (key, src)
                    for key, src in sources.items()}
         for future in as_completed(futures):
             key, src = futures[future]
-            enriched[key] = {**src, "page_text": future.result()}
+            fetch_result = future.result()
+            enriched[key] = {
+                **src,
+                "page_text": fetch_result["text"],
+                "page_text_note": _STATUS_NOTE[fetch_result["status"]],
+            }
 
     prompt = f"""
         A {pollutant} spike was detected near {location} between {start_date} and {end_date}.
         The following sources were found. Each includes its metadata and up to 3000 characters
-        of text fetched directly from the source URL (may be empty if the page was inaccessible).
+        of text fetched directly from the source URL. If "page_text_note" is non-empty, the
+        fetch failed for the stated reason and "page_text" should be treated as unavailable
+        rather than as evidence the source itself lacks relevant content.
 
         {json.dumps(enriched, indent = 2)}
 
