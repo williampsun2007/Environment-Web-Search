@@ -377,6 +377,36 @@ def sort_sources(location, start_date, end_date, pollutant, sources):
         STEP 1 — Assign each source an event_type (e.g. Wildfire, Industrial Accident, Power Plant Emissions,
         General Air Quality, etc.) based on what the source describes.
 
+        STEP 1b — Assign each source an entity: the single specific facility, company, vessel,
+        pipeline, or named/dated incident that is the actual origin of the pollutant release or
+        exposure being described — regardless of the source's event_type.
+
+          CRITICAL — cross-event_type consistency: If two or more sources describe the SAME
+          underlying facility or incident (e.g., one source is an EPA/state shutdown order for a
+          facility and another is an ATSDR/IDPH risk-assessment report about emissions from that
+          SAME facility), they MUST share the IDENTICAL entity string, even though their event_type
+          differs (e.g. "Industrial Accident" vs "General Air Quality"). Use the most complete,
+          consistent canonical name (company + facility name), e.g. always
+          "Sterigenics Willowbrook Facility" — never sometimes "Sterigenics" and sometimes
+          "Willowbrook facility" or "the Willowbrook plant."
+
+          PRESERVE EXISTING VALUES: If a source in the input JSON already has an entity value, keep
+          it exactly as-is unless you have clear evidence it is wrong. When assigning entity to a
+          newly-added source, first check whether any entity value already used elsewhere in the
+          input JSON describes the same facility/incident — if so, reuse that exact string verbatim
+          (same spelling/capitalization) instead of writing a new, similar-but-different string.
+
+          DO NOT OVER-MERGE: Only share an entity string across sources that describe the same
+          physical facility, company, vessel, or single specific incident. Do NOT merge two
+          different facilities just because they are the same industry, owner, or nearby location —
+          if in doubt, treat them as separate entities.
+
+          NO SINGLE RESPONSIBLE ENTITY: If a source does not describe a specific attributable
+          facility, company, or incident (e.g., a general regional air-quality-index reading, a
+          diffuse meteorological/wind pattern with no identifiable responsible party), set entity
+          equal to that source's own event_type string (e.g. entity = "General Air Quality").
+          Do not invent a facility name.
+
         STEP 2 — Assign each source a date field (e.g. "March 2021") if the month can be inferred from the
         source title or summary. Omit the date field entirely if unknown.
 
@@ -421,6 +451,7 @@ def sort_sources(location, start_date, end_date, pollutant, sources):
                 "url": "https://ww2.arb.ca.gov/...",
                 "type": "Government Report",
                 "event_type": "Wildfire",
+                "entity": "Dixie Fire",
                 "date": "July 2021",
                 "summary": "Official emissions data recorded during the Dixie Fire, July-August 2021."
             }},
@@ -429,6 +460,7 @@ def sort_sources(location, start_date, end_date, pollutant, sources):
                 "url": "https://www.airnow.gov/...",
                 "type": "Government Database",
                 "event_type": "Wildfire",
+                "entity": "Dixie Fire",
                 "date": "August 2021",
                 "summary": "Air quality index readings spiking in the region during the relevant period."
             }},
@@ -437,6 +469,7 @@ def sort_sources(location, start_date, end_date, pollutant, sources):
                 "url": "https://ehs.princeton.edu/...",
                 "type": "Academic Institution",
                 "event_type": "Wildfire",
+                "entity": "2023 Canadian Wildfires",
                 "date": "June 2023",
                 "summary": "University environmental health and safety office alert about wildfire smoke air quality."
             }},
@@ -445,6 +478,7 @@ def sort_sources(location, start_date, end_date, pollutant, sources):
                 "url": "https://www.reuters.com/...",
                 "type": "News Outlet",
                 "event_type": "Wildfire",
+                "entity": "Dixie Fire",
                 "date": "July 2021",
                 "summary": "News coverage reporting the fire's spread and affected counties."
             }},
@@ -453,6 +487,7 @@ def sort_sources(location, start_date, end_date, pollutant, sources):
                 "url": "https://en.wikipedia.org/wiki/2023_Canadian_wildfires",
                 "type": "Wikipedia",
                 "event_type": "Wildfire",
+                "entity": "2023 Canadian Wildfires",
                 "date": "June 2023",
                 "summary": "Wikipedia article documenting the 2023 Canadian wildfire season and its effects on air quality across North America."
             }},
@@ -461,6 +496,7 @@ def sort_sources(location, start_date, end_date, pollutant, sources):
                 "url": "https://www.reddit.com/...",
                 "type": "Social Media",
                 "event_type": "Wildfire",
+                "entity": "Dixie Fire",
                 "summary": "User reports of heavy smoke in the area around the same dates."
             }},
             "Source_7": {{
@@ -468,6 +504,7 @@ def sort_sources(location, start_date, end_date, pollutant, sources):
                 "url": "https://www.facebook.com/CaliforniaARB/posts/...",
                 "type": "Government Report",
                 "event_type": "Wildfire",
+                "entity": "Dixie Fire",
                 "date": "July 2021",
                 "summary": "Official agency Facebook post announcing an air quality health advisory due to wildfire smoke — Government Report tier, not Social Media, because it is the agency's own official statement."
             }},
@@ -476,8 +513,36 @@ def sort_sources(location, start_date, end_date, pollutant, sources):
                 "url": "https://www.csb.gov/...",
                 "type": "Government Report",
                 "event_type": "Industrial Accident",
+                "entity": "Example Refinery",
                 "date": "March 2021",
                 "summary": "Chemical Safety Board report on the refinery explosion and resulting emissions."
+            }},
+            "Source_9": {{
+                "title": "Illinois EPA Seal Order - Acme Chemical Plant Ethylene Oxide Emissions",
+                "url": "https://www.illinois.gov/...",
+                "type": "Government Report",
+                "event_type": "Industrial Accident",
+                "entity": "Acme Chemical Plant",
+                "date": "February 2019",
+                "summary": "State agency shutdown/seal order restricting the facility due to public health hazards from emissions."
+            }},
+            "Source_10": {{
+                "title": "ATSDR Health Consultation - Ethylene Oxide Concentrations Near Acme Chemical Plant",
+                "url": "https://www.atsdr.cdc.gov/...",
+                "type": "Government Report",
+                "event_type": "General Air Quality",
+                "entity": "Acme Chemical Plant",
+                "date": "March 2019",
+                "summary": "Federal health agency risk assessment of elevated emissions near the same facility as Source_9 — different event_type (monitoring/risk data vs. enforcement action) but the SAME entity, so it shares the identical entity string."
+            }},
+            "Source_11": {{
+                "title": "State Air Quality Index Summary - Regional Ozone Levels",
+                "url": "https://www.airnow.gov/...",
+                "type": "Government Database",
+                "event_type": "General Air Quality",
+                "entity": "General Air Quality",
+                "date": "June 2021",
+                "summary": "Routine regional AQI reading with no single identifiable responsible facility or incident, so entity falls back to the event_type string."
             }},
             "Continue": true
         }}
@@ -557,27 +622,38 @@ def compute_confidence_score(sources: dict, start_date = None, end_date = None) 
     tier_weights = {1: 10, 2: 8, 3: 5, 4: 4, 5: 3, 6: 2, 7: 1}
     source_list = list(sources.values())
     if not source_list:
-        return {"score": 0, "confidence": "Low", "quality": 0, "consensus": 0, "coverage": 0}
+        return {"score": 0, "confidence": "Low", "quality": 0, "consensus": 0, "coverage": 0,
+                "top_entity": "", "top_et": "", "group_scores": {}, "entity_scores": {}}
 
     event_weights, event_counts = {}, {}
+    entity_weights, entity_counts = {}, {}
+    entity_event_types = {}  # entity -> {event_type: discounted_count}
     total_weight = 0
     for src in source_list:
         et = src.get("event_type", "Unknown")
+        entity = src.get("entity") or et
         weight = tier_weights.get(_credibility_tier(src.get("type", "")), 1)
         discount = 1
         if start_date and end_date and _source_in_window(src.get("date", ""), start_date, end_date) is False:
             discount = OUT_OF_WINDOW_DISCOUNT
         event_weights[et] = event_weights.get(et, 0) + weight * discount
         event_counts[et] = event_counts.get(et, 0) + discount
+        entity_weights[entity] = entity_weights.get(entity, 0) + weight * discount
+        entity_counts[entity] = entity_counts.get(entity, 0) + discount
+        entity_event_types.setdefault(entity, {})
+        entity_event_types[entity][et] = entity_event_types[entity].get(et, 0) + discount
         total_weight += weight * discount
 
     total_count = len(source_list)
-    top_et = max(event_weights, key = lambda et: min(event_weights[et], 40) + round((event_counts[et] / total_count) * 30))
-    quality = round(min(event_weights[top_et], 40))
-    consensus = round((event_counts[top_et] / total_count) * 30)
+    top_entity = max(entity_weights, key = lambda e: min(entity_weights[e], 40) + round((entity_counts[e] / total_count) * 30))
+    quality = round(min(entity_weights[top_entity], 40))
+    consensus = round((entity_counts[top_entity] / total_count) * 30)
     coverage = round(min(total_weight, 30))
     score = quality + consensus + coverage
     confidence = "High" if score >= 70 else ("Medium" if score >= 40 else "Low")
+
+    # Representative event_type for the winning entity — its own highest-weight event_type.
+    top_et = max(entity_event_types[top_entity], key = lambda et: entity_event_types[top_entity][et])
 
     group_scores = {}
     for et in event_weights:
@@ -589,8 +665,34 @@ def compute_confidence_score(sources: dict, start_date = None, end_date = None) 
             "confidence": "High" if g_score >= 70 else ("Medium" if g_score >= 40 else "Low")
         }
 
+    entity_scores = {}
+    for e in entity_weights:
+        e_quality = round(min(entity_weights[e], 40))
+        e_consensus = round((entity_counts[e] / total_count) * 30)
+        e_score = e_quality + e_consensus + coverage
+        entity_scores[e] = {
+            "score": e_score,
+            "confidence": "High" if e_score >= 70 else ("Medium" if e_score >= 40 else "Low"),
+            "event_types": sorted(entity_event_types[e]),
+            "source_count": round(entity_counts[e]),
+        }
+
+    # Attach each event_type group's dominant entity and any sibling event_types sharing it,
+    # so the UI can flag cross-group corroboration without relying on LLM prose.
+    et_dominant_entity = {}
+    for et in event_weights:
+        et_dominant_entity[et] = max(
+            (e for e in entity_event_types if et in entity_event_types[e]),
+            key = lambda e: entity_event_types[e][et]
+        )
+    for et, gs in group_scores.items():
+        dom = et_dominant_entity[et]
+        gs["entity"] = dom
+        gs["sibling_event_types"] = [x for x in entity_scores[dom]["event_types"] if x != et]
+
     return {"score": score, "confidence": confidence, "quality": quality, "consensus": consensus,
-            "coverage": coverage, "group_scores": group_scores}
+            "coverage": coverage, "top_entity": top_entity, "top_et": top_et,
+            "group_scores": group_scores, "entity_scores": entity_scores}
 
 def post_sort_sources(sources: dict) -> dict:
     group_order, groups = [], {}
@@ -699,19 +801,36 @@ def fetch_page_text(url):
 def synthesize_findings(location, start_date, end_date, pollutant, sources):
     score_data = compute_confidence_score(sources, start_date, end_date)
 
-    top_et = max(score_data["group_scores"], key = lambda k: score_data["group_scores"][k]["score"]) if score_data["group_scores"] else ""
+    top_entity = score_data.get("top_entity", "")
+    top_et = score_data.get("top_et", "")
+
     group_score_lines = "\n".join(
         f"  - {et}: {gs['score']}/100 ({gs['confidence']})"
         for et, gs in sorted(score_data["group_scores"].items(), key = lambda x: x[1]["score"],
         reverse = True)
     )
 
+    entity_score_lines = "\n".join(
+        f"  - {e}: {es['score']}/100 ({es['confidence']}) — {es['source_count']} source(s) "
+        f"across event type(s): {', '.join(es['event_types'])}"
+        for e, es in sorted(score_data.get("entity_scores", {}).items(), key = lambda x: x[1]["score"],
+        reverse = True)
+    )
+
     score_context = f"""The following confidence scores were computed deterministically from
-        source credibility and consensus:
+        source credibility and consensus. An "entity" is the specific facility, company, or
+        incident responsible for a source's described event; sources that share an entity are
+        evidence for the SAME underlying cause even when their event_type label differs (e.g. an
+        enforcement/shutdown source and a monitoring/risk-assessment source about the same
+        facility) — they are NOT competing alternative causes.
+
         Overall: {score_data['score']}/100 → {score_data['confidence']}
-        Per event type (descending by score):
-        {group_score_lines}
-        Top-ranked event type: {top_et}"""
+        Per entity (descending by score):
+        {entity_score_lines}
+        Top-ranked entity: {top_entity} (representative event type: {top_et})
+
+        Per event type (descending by score) — informational subgroup view only:
+        {group_score_lines}"""
 
     _STATUS_NOTE = {
         "ok": "",
@@ -748,21 +867,29 @@ def synthesize_findings(location, start_date, end_date, pollutant, sources):
         these exact keys (no prose before or after the JSON):
 
         {{
-          "most_likely_cause": "One sentence identifying {top_et} as the most likely cause of
-           the {pollutant} spike (it has the highest confidence score), citing specific source titles.
-           Explicitly state whether this event would plausibly release {pollutant} or its precursors. If
-           the fetched source text strongly contradicts this ranking, note the discrepancy.",
+          "most_likely_cause": "One sentence identifying {top_entity} as the most likely cause of
+           the {pollutant} spike (combined confidence score {score_data['score']}/100 across
+           {score_data.get('entity_scores', {}).get(top_entity, {}).get('source_count', 0)} source(s)
+           spanning event type(s): {', '.join(score_data.get('entity_scores', {}).get(top_entity, {}).get('event_types', []))}),
+           citing specific source titles. If {top_entity} equals its own event_type value (meaning no
+           single identifiable responsible facility/company/incident was found — e.g. a general
+           regional air-quality pattern), phrase the sentence around that general condition instead
+           of implying a specific facility exists. Explicitly state whether this cause would
+           plausibly release {pollutant} or its precursors. If the fetched source text strongly
+           contradicts this ranking, note the discrepancy.",
           "key_evidence": ["Bullet citing source 1 — include any direct mention of {pollutant} if found", "Bullet citing source 2", "Bullet citing source 3"],
           "gaps_and_alternatives": ["Gap or alternative explanation 1", "Gap 2"],
           "confidence_rationale": "One sentence explaining why the evidence warrants an overall
            score of {score_data['score']}/100 ({score_data['confidence']}) — what specifically drives
-           the score up or down (e.g. source credibility, degree of consensus across event types, total
+           the score up or down (e.g. source credibility, degree of consensus across entities, total
            volume of evidence).",
           "group_confidence": {{
             "<event_type exactly as it appears in the sources>": {{
               "rationale": "One sentence explaining why this event type received its computed
                score (visible in the score context above) — what makes its sources stronger or weaker than
-               competing event types."
+               other event types. If this event type's sources share an entity with another event type
+               shown in the per-entity table above, say so explicitly and note that they are combined
+               evidence for the same entity, not a competing cause, citing the combined entity score."
             }}
           }}
         }}
@@ -857,6 +984,8 @@ def _display_single_results(sources, synthesis, start_date, end_date):
     st.subheader("Summary")
     if isinstance(synthesis, dict):
         st.info(f"**Most Likely Cause:** {synthesis.get('most_likely_cause', '')}")
+        if synthesis.get("top_entity"):
+            st.caption(f"Determined cause (entity): **{synthesis['top_entity']}**")
         col1, col2 = st.columns(2)
         with col1:
             st.markdown("**Key Evidence**")
@@ -897,7 +1026,16 @@ def _display_single_results(sources, synthesis, start_date, end_date):
                 f' — {gc.get("rationale", "")}',
                 unsafe_allow_html = True
             )
-            
+            siblings = gs.get("sibling_event_types", [])
+            if siblings:
+                entity = gs.get("entity", "")
+                combined = synthesis.get("entity_scores", {}).get(entity, {}) if isinstance(synthesis, dict) else {}
+                st.caption(
+                    f'Note: these sources concern the same underlying entity ("{entity}") as '
+                    f'the {", ".join(siblings)} group(s) — combined confidence: '
+                    f'{combined.get("score", "")}/100 ({combined.get("confidence", "")}).'
+                )
+
         for i, source in enumerate(group_sources, 1):
             st.subheader(f"Source {i}: {source['title']}")
             st.write(f"**Type:** {source['type']}")
@@ -1071,7 +1209,7 @@ with tab2:
         summary_ws.append(["Search #", "Location", "Start Date", "End Date", "Pollutant",
                             "Score", "Confidence", "Most Likely Cause", "Source Count", "Error"])
         sources_ws.append(["Search #", "Location", "Pollutant", "Source #",
-                            "Title", "URL", "Type", "Event Type", "Date", "Summary"])
+                            "Title", "URL", "Type", "Event Type", "Entity", "Date", "Summary"])
 
         _style_header(summary_ws)
         _style_header(sources_ws)
@@ -1122,7 +1260,7 @@ with tab2:
                     sources_ws.append([
                         i, loc, poll, j,
                         src.get("title", ""), src.get("url", ""),
-                        src.get("type", ""), src.get("event_type", ""),
+                        src.get("type", ""), src.get("event_type", ""), src.get("entity", ""),
                         src.get("date", ""), src.get("summary", "")
                     ])
 
