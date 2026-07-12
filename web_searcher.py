@@ -401,6 +401,23 @@ def sort_sources(location, start_date, end_date, pollutant, sources):
           different facilities just because they are the same industry, owner, or nearby location —
           if in doubt, treat them as separate entities.
 
+          QUALIFIER DRIFT (same owner/location, missing sub-plant designation): The DO NOT
+          OVER-MERGE rule above is about different facilities/companies — it does NOT apply when
+          the only difference between a candidate name and an already-used entity string is a
+          dropped or added qualifier (e.g. "East"/"West", "Plant", "Unit 2") for the SAME owner and
+          location. In that narrower case, default to MERGING: if a source doesn't itself specify
+          which sub-plant/unit is responsible, reuse the existing (more specific) entity string
+          already assigned to that owner/location rather than creating a new, less-qualified
+          variant. Only keep them separate if some source explicitly distinguishes the sub-plants
+          (e.g. one source is specifically about the West plant and another specifically about the
+          East plant).
+
+          COMBINED-ENTITY NAMING: When a single source implicates two or more facilities jointly
+          (e.g. two nearby refineries both named as possible sources in the same report), join their
+          names with " & " in ALPHABETICAL order (e.g. always "A Refinery & B Refinery", never
+          "B Refinery & A Refinery") so the same combination always produces the identical string
+          regardless of which facility the source mentions first.
+
           NO SINGLE RESPONSIBLE ENTITY: If a source does not describe a specific attributable
           facility, company, or incident (e.g., a general regional air-quality-index reading, a
           diffuse meteorological/wind pattern with no identifiable responsible party), set entity
@@ -694,9 +711,17 @@ def compute_confidence_score(sources: dict, start_date = None, end_date = None) 
             "coverage": coverage, "top_entity": top_entity, "top_et": top_et,
             "group_scores": group_scores, "entity_scores": entity_scores}
 
+def _canonicalize_entity(entity: str) -> str:
+    if not entity or "&" not in entity:
+        return entity
+    parts = [p.strip() for p in entity.split("&") if p.strip()]
+    return " & ".join(sorted(parts, key = str.lower))
+
 def post_sort_sources(sources: dict) -> dict:
     group_order, groups = [], {}
     for src in sources.values():
+        if src.get("entity"):
+            src["entity"] = _canonicalize_entity(src["entity"])
         et = src.get("event_type", "Unknown")
         if et not in groups:
             group_order.append(et)
