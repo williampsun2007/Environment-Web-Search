@@ -645,6 +645,8 @@ def compute_confidence_score(sources: dict, start_date = None, end_date = None) 
     event_weights, event_counts = {}, {}
     entity_weights, entity_counts = {}, {}
     entity_event_types = {}  # entity -> {event_type: discounted_count}
+    entity_raw_counts = {}  # entity -> raw (undiscounted) source count, for display only
+    entity_et_raw_counts = {}  # entity -> {event_type: raw (undiscounted) source count}
     total_weight = 0
     for src in source_list:
         et = src.get("event_type", "Unknown")
@@ -659,6 +661,9 @@ def compute_confidence_score(sources: dict, start_date = None, end_date = None) 
         entity_counts[entity] = entity_counts.get(entity, 0) + discount
         entity_event_types.setdefault(entity, {})
         entity_event_types[entity][et] = entity_event_types[entity].get(et, 0) + discount
+        entity_raw_counts[entity] = entity_raw_counts.get(entity, 0) + 1
+        entity_et_raw_counts.setdefault(entity, {})
+        entity_et_raw_counts[entity][et] = entity_et_raw_counts[entity].get(et, 0) + 1
         total_weight += weight * discount
 
     total_count = len(source_list)
@@ -691,7 +696,7 @@ def compute_confidence_score(sources: dict, start_date = None, end_date = None) 
             "score": e_score,
             "confidence": "High" if e_score >= 70 else ("Medium" if e_score >= 40 else "Low"),
             "event_types": sorted(entity_event_types[e]),
-            "source_count": round(entity_counts[e]),
+            "source_count": entity_raw_counts[e],
         }
 
     # Attach each event_type group's dominant entity and any sibling event_types sharing it,
@@ -706,6 +711,19 @@ def compute_confidence_score(sources: dict, start_date = None, end_date = None) 
         dom = et_dominant_entity[et]
         gs["entity"] = dom
         gs["sibling_event_types"] = [x for x in entity_scores[dom]["event_types"] if x != et]
+
+        # Every distinct entity contributing sources to this event_type group, so the UI can
+        # show real per-entity numbers instead of implying the group score is one cause's score.
+        group_entities = sorted(
+            (e for e in entity_event_types if et in entity_event_types[e]),
+            key = lambda e: entity_scores[e]["score"], reverse = True
+        )
+        gs["entities"] = [
+            {"entity": e, "score": entity_scores[e]["score"], "confidence": entity_scores[e]["confidence"],
+             "source_count": entity_et_raw_counts[e][et]}
+            for e in group_entities
+        ]
+        gs["is_single_entity"] = len(group_entities) <= 1
 
     return {"score": score, "confidence": confidence, "quality": quality, "consensus": consensus,
             "coverage": coverage, "top_entity": top_entity, "top_et": top_et,
@@ -831,6 +849,8 @@ def synthesize_findings(location, start_date, end_date, pollutant, sources):
 
     group_score_lines = "\n".join(
         f"  - {et}: {gs['score']}/100 ({gs['confidence']})"
+        + (f" — spans {len(gs['entities'])} distinct entities, not a single cause"
+           if not gs.get("is_single_entity", True) else "")
         for et, gs in sorted(score_data["group_scores"].items(), key = lambda x: x[1]["score"],
         reverse = True)
     )
@@ -914,7 +934,10 @@ def synthesize_findings(location, start_date, end_date, pollutant, sources):
                score (visible in the score context above) — what makes its sources stronger or weaker than
                other event types. If this event type's sources share an entity with another event type
                shown in the per-entity table above, say so explicitly and note that they are combined
-               evidence for the same entity, not a competing cause, citing the combined entity score."
+               evidence for the same entity, not a competing cause, citing the combined entity score.
+               If the score context marks this event type as spanning multiple distinct entities, say so
+               explicitly and make clear the score reflects aggregate volume across several unrelated
+               facilities/incidents, not confidence in any single one of them as the cause."
             }}
           }}
         }}
@@ -1045,12 +1068,26 @@ def _display_single_results(sources, synthesis, start_date, end_date):
             g_conf = gs.get("confidence", "")
             g_score = gs.get("score", 0)
             color = {"HIGH": "green", "MEDIUM": "orange", "LOW": "red"}.get(g_conf.upper(), "gray")
+            group_entities = gs.get("entities", [])
+            is_single_entity = gs.get("is_single_entity", True)
+            label = "Confidence this is the cause" if is_single_entity else \
+                f"Category confidence (spans {len(group_entities)} entities — not a single cause)"
             st.markdown(
-                f'<span style="color:{color};font-weight:bold">Confidence this is the cause: {g_conf}</span>'
+                f'<span style="color:{color};font-weight:bold">{label}: {g_conf}</span>'
                 f' &nbsp;·&nbsp; <b>{g_score}/100</b>'
                 f' — {gc.get("rationale", "")}',
                 unsafe_allow_html = True
             )
+            
+            if not is_single_entity:
+                top_entity = synthesis.get("top_entity", "") if isinstance(synthesis, dict) else ""
+                for e in group_entities:
+                    marker = " ⭐ (Determined most likely cause)" if e["entity"] == top_entity else ""
+                    st.caption(
+                        f'- {e["entity"]}: {e["score"]}/100 ({e["confidence"]}) '
+                        f'· {e["source_count"]} source(s){marker}'
+                    )
+                    
             siblings = gs.get("sibling_event_types", [])
             if siblings:
                 entity = gs.get("entity", "")
