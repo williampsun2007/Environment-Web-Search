@@ -229,16 +229,29 @@ def searching_llm(location, start_date, end_date, pollutant, existing_sources, s
             messages.append({"role": "assistant", "content": None, "tool_calls": text.tool_calls})
 
             for tool_call in text.tool_calls:
-                query = json.loads(tool_call.function.arguments)["query"]
+                try:
+                    query = json.loads(tool_call.function.arguments)["query"]
+                except (json.JSONDecodeError, KeyError, TypeError) as e:
+                    # Malformed tool-call arguments from the model — skip this call rather
+                    # than crashing the whole pipeline, but still return a tool message
+                    # since every tool_call.id issued must be answered in the next request.
+                    print(f"Malformed tool call arguments in searching_llm, skipping: {e}")
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "content": json.dumps([])
+                    })
+                    continue
+
                 searched_queries.add(query)
                 print(f"Searching for: {query}")
                 st.write(f"Searching: *{query}*")
-                
-                try: 
+
+                try:
                     results = search_web(query)
                 except RuntimeError:
                     raise RuntimeError("Run time error occured, check your API keys.")
-                
+
                 print(f"Got {len(results)} results")
                 st.write(f"&nbsp;&nbsp;&nbsp;&nbsp;→ {len(results)} results")
 
