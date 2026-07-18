@@ -661,6 +661,7 @@ def compute_confidence_score(sources: dict, start_date = None, end_date = None) 
     entity_raw_counts = {}  # entity -> raw (undiscounted) source count, for display only
     entity_et_raw_counts = {}  # entity -> {event_type: raw (undiscounted) source count}
     total_weight = 0
+    
     for src in source_list:
         et = src.get("event_type", "Unknown")
         entity = src.get("entity") or et
@@ -694,7 +695,8 @@ def compute_confidence_score(sources: dict, start_date = None, end_date = None) 
     for et in event_weights:
         g_quality = round(min(event_weights[et], 40))
         g_consensus = round((event_counts[et] / total_count) * 30)
-        g_score = g_quality + g_consensus + coverage
+        g_coverage = round(min(event_weights[et], 30))
+        g_score = g_quality + g_consensus + g_coverage
         group_scores[et] = {
             "score": g_score,
             "confidence": "High" if g_score >= 70 else ("Medium" if g_score >= 40 else "Low")
@@ -704,7 +706,8 @@ def compute_confidence_score(sources: dict, start_date = None, end_date = None) 
     for e in entity_weights:
         e_quality = round(min(entity_weights[e], 40))
         e_consensus = round((entity_counts[e] / total_count) * 30)
-        e_score = e_quality + e_consensus + coverage
+        e_coverage = round(min(entity_weights[e], 30))
+        e_score = e_quality + e_consensus + e_coverage
         entity_scores[e] = {
             "score": e_score,
             "confidence": "High" if e_score >= 70 else ("Medium" if e_score >= 40 else "Low"),
@@ -720,6 +723,7 @@ def compute_confidence_score(sources: dict, start_date = None, end_date = None) 
             (e for e in entity_event_types if et in entity_event_types[e]),
             key = lambda e: entity_event_types[e][et]
         )
+        
     for et, gs in group_scores.items():
         dom = et_dominant_entity[et]
         gs["entity"] = dom
