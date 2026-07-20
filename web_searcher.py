@@ -1165,8 +1165,12 @@ with tab1:
     pollutant = st.text_input("Pollutant", placeholder = "e.g. PM2.5, ethylene, VOCs",
                               key = "pollutant", disabled = locked)
 
+    dates_ok = start_date <= end_date
+    if not dates_ok:
+        st.error("Start Date must be on or before End Date.")
+
     keys_ok = bool(st.session_state.deepseek_key and st.session_state.serper_key)
-    fields_ok = bool(location and pollutant)
+    fields_ok = bool(location and pollutant) and dates_ok
 
     if st.button("Search", disabled = locked or not fields_ok, key = "btn_single"):
         if not keys_ok:
