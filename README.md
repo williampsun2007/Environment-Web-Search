@@ -2,6 +2,12 @@
 
 A Streamlit app that helps explain **why** a pollutant spike happened. Give it a location, a date range, and a pollutant, and it searches the web for real-world events — wildfires, industrial accidents, chemical spills, power plant emissions — that could plausibly account for the spike, then ranks and synthesizes the evidence into a single, sourced conclusion.
 
+**[Try it live →](https://environment-web-search-eitcwclzecyjaiws4yva8e.streamlit.app/)**
+
+(Note, may take ~20-30 seconds to wakeup.)
+
+![Environment Web Search demo](demo.gif)
+
 ## How it works
 
 1. **Search** — An LLM agent (DeepSeek) is given the location, date range, and pollutant, and repeatedly calls a web search tool (via the Serper API) to look for explanatory events. It's steered through a fixed priority order: government sources first (EPA, AirNow, NOAA, CDC, state environmental agencies, CSB, NTSB, NIFC), then academic sources (PubMed, Google Scholar, ScienceDirect), then general news, running at least 5 searches per round.
@@ -50,3 +56,7 @@ Then, in the browser tab that opens:
 
 - Search quality and cost depend on the DeepSeek model chosen and the number of rounds run; each search typically takes 1–5 minutes.
 - This tool is intended to surface plausible explanatory evidence, not to serve as definitive proof of causation — always verify findings against primary sources before relying on them.
+
+## License
+
+This project is licensed under the MIT License.
