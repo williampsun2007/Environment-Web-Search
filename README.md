@@ -23,6 +23,12 @@ A Streamlit app that helps explain **why** a pollutant spike happened. Give it a
 - **Confidence scoring** — Every result comes with a numeric score and High/Medium/Low confidence rating, broken down by entity and event type, so you can see at a glance whether the evidence points clearly to one cause or is spread thin across several possibilities.
 - **Source-grounded synthesis** — The final write-up is generated from the actual text of each source, not just titles and snippets, and flags cases where a source's content contradicts the ranking.
 
+## Project structure
+
+- `web_searcher.py` — the Streamlit app (UI only)
+- `search_pipeline.py` — the search, ranking, scoring, and synthesis engine
+- `excel_export.py` — batch upload validation and Excel report generation
+
 ## Requirements
 
 - Python 3.9+
