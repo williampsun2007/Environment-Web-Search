@@ -1,7 +1,7 @@
 '''
 Pollution Event Web Search - Streamlit entry point.
 
-This is the app's UI layer only: sidebar (API key entry, model choice), the
+This is the app's UI layer: sidebar (API key entry, model choice), the
 Single Search tab, and the Batch Search tab. It holds no research logic or
 Excel-building logic itself - it calls into search_pipeline.py to find, rank,
 score, and synthesize an explanation for a pollutant spike, and into
