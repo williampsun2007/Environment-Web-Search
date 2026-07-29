@@ -600,6 +600,67 @@ def sort_sources(location, start_date, end_date, pollutant, sources):
         print("Invalid JSON in sort sources, skipping")
         return {}
 
+def verify_source_dates(pollutant, enriched_sources):
+    # enriched_sources: dict of Source_N -> {..., "date", "page_text", "page_text_note", ...}
+    # sort_sources() assigns "date" from only the title/snippet, before any page text is
+    # fetched, so it can be wrong. This checks each source's actual fetched page text and
+    # returns corrections only where the text clearly establishes a different date - so a
+    # bad guess gets fixed before compute_confidence_score() uses it, not after.
+    checkable = {
+        k: {"title": v.get("title", ""), "assigned_date": v.get("date", "unknown"),
+            "page_text": v.get("page_text", "")}
+        for k, v in enriched_sources.items()
+        if v.get("page_text") and not v.get("page_text_note")
+    }
+    if not checkable:
+        return {}
+
+    prompt = f'''
+        Each source below concerns a {pollutant} spike investigation. Each has a title,
+        the date currently assigned to it, and text fetched directly from its page.
+
+        {json.dumps(checkable, indent = 2)}
+
+        Your job is to check whether "assigned_date" matches what the page text actually
+        says. Return ONLY a JSON object mapping source keys to a corrected date string
+        (format "Month YYYY", e.g. "June 2020") for EITHER of these cases:
+          - The page text clearly documents a different month/year than "assigned_date"
+            for the event/publication the source describes.
+          - "assigned_date" is "unknown" but the page text clearly establishes a date.
+
+        Be conservative: omit a source entirely from the output if you are not confident,
+        if the page text does not clearly indicate a date, or if "assigned_date" already
+        looks correct. Do not guess.
+
+        Do not write any explanatory text before or after the JSON.
+        Return ONLY the JSON object, e.g.:
+        {{
+            "Source_3": "June 2020"
+        }}
+        If no corrections are needed, return an empty JSON object: {{}}
+    '''
+
+    try:
+        response = client.chat.completions.create(
+            model = "deepseek-chat",
+            messages = [{"role": "user", "content": prompt}],
+            response_format = {"type": "json_object"}
+        )
+    except OpenAIAuthError:
+        raise RuntimeError("Invalid DeepSeek API key. Please check your key in the sidebar.")
+    except Exception as e:
+        print(f"LLM API error in verify_source_dates: {e}")
+        return {}
+
+    try:
+        text = response.choices[0].message.content
+        text = re.sub(r"```[a-z]*", "", text).strip()
+        print(f"Raw response verify_source_dates: {text}")
+        return json.loads(text)
+    except json.JSONDecodeError:
+        print("Invalid JSON in verify_source_dates, skipping")
+        return {}
+
 def dedupe_sources(sources):
     seen_urls = set()
     deduped = {}
@@ -667,6 +728,7 @@ def compute_confidence_score(sources: dict, start_date = None, end_date = None) 
         discount = 1
         if start_date and end_date and _source_in_window(src.get("date", ""), start_date, end_date) is False:
             discount = OUT_OF_WINDOW_DISCOUNT
+            
         event_weights[et] = event_weights.get(et, 0) + weight * discount
         event_counts[et] = event_counts.get(et, 0) + discount
         entity_weights[entity] = entity_weights.get(entity, 0) + weight * discount
@@ -857,8 +919,45 @@ def fetch_page_text(url):
         return {"text": "", "status": "error"}
 
 def synthesize_findings(location, start_date, end_date, pollutant, sources):
-    score_data = compute_confidence_score(sources, start_date, end_date)
-    print("Computed confidence score, starting page fetch...")
+    _STATUS_NOTE = {
+        "ok": "",
+        "empty": "page text unavailable — page fetched successfully but contained no extractable text",
+        "blocked": "page text unavailable — site blocked automated access (bot-protection challenge page)",
+        "error": "page text unavailable — the page could not be fetched (network error or unsupported content type)",
+    }
+
+    print("Starting page fetch...")
+    enriched = {}
+    with ThreadPoolExecutor(max_workers = 8) as executor:
+        futures = {executor.submit(fetch_page_text, src.get("url", "")): (key, src)
+                   for key, src in sources.items()}
+        for future in as_completed(futures):
+            key, src = futures[future]
+            fetch_result = future.result()
+            enriched[key] = {
+                **src,
+                "page_text": fetch_result["text"],
+                "page_text_note": _STATUS_NOTE[fetch_result["status"]],
+            }
+    print(f"Finished fetching page text for {len(enriched)} sources.")
+
+    # sort_sources() only ever sees a title/snippet when it assigns "date", so it can be
+    # wrong. Now that page text is available, correct it before scoring - not after - so a
+    # bad guess can't silently inflate compute_confidence_score()'s in-window credit.
+    date_corrections = verify_source_dates(pollutant, enriched)
+    if date_corrections:
+        print(f"Applying date corrections: {date_corrections}")
+    for key, new_date in date_corrections.items():
+        if key in enriched:
+            enriched[key]["date"] = new_date
+
+    corrected_sources = {k: dict(v) for k, v in sources.items()}
+    for key, new_date in date_corrections.items():
+        if key in corrected_sources:
+            corrected_sources[key]["date"] = new_date
+
+    score_data = compute_confidence_score(corrected_sources, start_date, end_date)
+    print("Computed confidence score.")
 
     top_entity = score_data.get("top_entity", "")
     top_et = score_data.get("top_et", "")
@@ -892,27 +991,6 @@ def synthesize_findings(location, start_date, end_date, pollutant, sources):
 
         Per event type (descending by score) — informational subgroup view only:
         {group_score_lines}"""
-
-    _STATUS_NOTE = {
-        "ok": "",
-        "empty": "page text unavailable — page fetched successfully but contained no extractable text",
-        "blocked": "page text unavailable — site blocked automated access (bot-protection challenge page)",
-        "error": "page text unavailable — the page could not be fetched (network error or unsupported content type)",
-    }
-
-    enriched = {}
-    with ThreadPoolExecutor(max_workers = 8) as executor:
-        futures = {executor.submit(fetch_page_text, src.get("url", "")): (key, src)
-                   for key, src in sources.items()}
-        for future in as_completed(futures):
-            key, src = futures[future]
-            fetch_result = future.result()
-            enriched[key] = {
-                **src,
-                "page_text": fetch_result["text"],
-                "page_text_note": _STATUS_NOTE[fetch_result["status"]],
-            }
-    print(f"Finished fetching page text for {len(enriched)} sources.")
 
     prompt = f"""
         A {pollutant} spike was detected near {location} between {start_date} and {end_date}.
@@ -981,6 +1059,7 @@ def synthesize_findings(location, start_date, end_date, pollutant, sources):
         text = re.sub(r"```[a-z]*", "", text).strip()
         result = json.loads(text)
         result.update(score_data)
+        result["date_corrections"] = date_corrections
         return result
     except json.JSONDecodeError:
         print("Invalid JSON in synthesis_findings()")

@@ -207,6 +207,11 @@ with tab1:
                 st.session_state.synthesis = search_pipeline.synthesize_findings(
                     loc, start, end, poll, st.session_state.sources
                 )
+                
+            if isinstance(st.session_state.synthesis, dict):
+                for src_key, new_date in st.session_state.synthesis.get("date_corrections", {}).items():
+                    if src_key in st.session_state.sources:
+                        st.session_state.sources[src_key]["date"] = new_date
         except Exception as e:
             st.error(f"Search error: {e}")
         finally:
@@ -336,6 +341,9 @@ with tab2:
                     score = synthesis.get("score", "")
                     confidence = synthesis.get("confidence", "")
                     cause = synthesis.get("most_likely_cause", "")
+                    for src_key, new_date in synthesis.get("date_corrections", {}).items():
+                        if src_key in sources:
+                            sources[src_key]["date"] = new_date
                 else:
                     score, confidence, cause = "", "", (str(synthesis) if synthesis else "")
 
