@@ -1,6 +1,6 @@
 # Environment Web Search
 
-A Streamlit app that helps explain **why** a pollutant spike happened. Give it a location, a date range, and a pollutant, and it searches the web for real-world events — wildfires, industrial accidents, chemical spills, power plant emissions — that could plausibly account for the spike, then ranks and synthesizes the evidence into a single, sourced conclusion.
+A Streamlit app that helps explain why a pollutant spike happened. Give it a location, a date range, and a pollutant, and it searches the web for real-world events — wildfires, industrial accidents, chemical spills, power plant emissions — that could plausibly account for the spike, then ranks and synthesizes the evidence into a single, sourced conclusion.
 
 **[Try it live →](https://environment-web-search-eitcwclzecyjaiws4yva8e.streamlit.app/)**
 
